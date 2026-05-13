@@ -1,0 +1,15 @@
+# Python cache and virtual envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / local settings
+.vscode/
+
+# Downloaded large GIS artifacts (re-generated at runtime)
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
