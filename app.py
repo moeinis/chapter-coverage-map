@@ -432,6 +432,16 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
     return circles
 
 
+def compute_zip_label_style(current_zoom: float) -> dict[str, float]:
+    zoom_factor = max(0.0, float(current_zoom) - 3.0)
+    return {
+        "size_meters": 450 + (zoom_factor * 170),
+        "min_pixels": 4 + int(round(zoom_factor * 1.5)),
+        "max_pixels": 9 + int(round(zoom_factor * 2.5)),
+        "min_zoom": max(3.0, min(DEFAULT_LABEL_MIN_ZOOM, float(current_zoom) - 0.2)),
+    }
+
+
 with st.sidebar:
     st.subheader("⚙️ Controls")
     selected_chapters = st.multiselect(
@@ -448,6 +458,11 @@ with st.sidebar:
         max_value=7.0,
         value=3.6,
         step=0.1,
+    )
+    show_zip_numbers = st.checkbox(
+        "Show ZIP code numbers",
+        value=False,
+        help="Turn ZIP number labels on or off.",
     )
 
     show_chapter_radius_controls = st.checkbox(
@@ -668,7 +683,8 @@ if zip_polygons:
 
 # ZIP code label layer — auto-on with safe defaults (no sidebar controls).
 zip_labels_rendered = 0
-if not zip_geo_with_coverage.empty:
+zip_label_style = compute_zip_label_style(map_zoom)
+if show_zip_numbers and not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
@@ -685,11 +701,11 @@ if not zip_geo_with_coverage.empty:
                 get_position="[lon, lat]",
                 get_text="label",
                 get_color="text_color",
-                get_size=700,
+                get_size=zip_label_style["size_meters"],
                 size_units="'meters'",
-                size_min_pixels=7,
-                size_max_pixels=13,
-                min_zoom=DEFAULT_LABEL_MIN_ZOOM,
+                size_min_pixels=zip_label_style["min_pixels"],
+                size_max_pixels=zip_label_style["max_pixels"],
+                min_zoom=zip_label_style["min_zoom"],
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
