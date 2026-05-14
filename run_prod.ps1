@@ -15,6 +15,12 @@ if (-not (Test-Path $logDir)) {
     New-Item -Path $logDir -ItemType Directory | Out-Null
 }
 
+$runtimeDir = Join-Path $projectRoot '.runtime'
+if (-not (Test-Path $runtimeDir)) {
+    New-Item -Path $runtimeDir -ItemType Directory | Out-Null
+}
+$streamlitPidFile = Join-Path $runtimeDir 'streamlit.pid'
+
 while ($true) {
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $outLog = Join-Path $logDir "streamlit_$stamp.out.log"
@@ -28,7 +34,13 @@ while ($true) {
         -RedirectStandardError $errLog `
         -PassThru
 
+    Set-Content -Path $streamlitPidFile -Value $proc.Id -Encoding ascii
+    Write-Host "[$(Get-Date -Format s)] Streamlit PID: $($proc.Id)"
+
     Wait-Process -Id $proc.Id
+    if (Test-Path $streamlitPidFile) {
+        Remove-Item $streamlitPidFile -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "[$(Get-Date -Format s)] Streamlit exited with code $($proc.ExitCode). Restarting in 2 seconds..."
     Start-Sleep -Seconds 2
 }
