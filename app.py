@@ -533,6 +533,7 @@ selected_center_zip_map = (
     if not selected_center_zip_df.empty
     else {}
 )
+selected_center_zip_keys = tuple(sorted(selected_center_zip_map.keys()))
 
 if zip_geo.empty:
     logger.warning("zip_geo_empty dataset_scope=%s", zip_dataset_scope)
@@ -567,11 +568,13 @@ if not zip_geo.empty:
         distance_matrix.index = zip_geo_with_coverage.index
     else:
         distance_matrix = precompute_zip_chapter_distances(zip_geo_with_coverage)
-    covered = np.zeros(len(zip_geo_with_coverage), dtype=bool)
-    for c in all_circles:
-        chapter_name = c["name"]
-        if chapter_name in distance_matrix.columns:
-            covered |= distance_matrix[chapter_name].to_numpy(dtype=float) <= float(c["radius_miles"])
+    active_chapters = [c for c in all_circles if c["name"] in distance_matrix.columns]
+    if active_chapters:
+        dm = distance_matrix[[c["name"] for c in active_chapters]].to_numpy(dtype=float)
+        radii = np.array([float(c["radius_miles"]) for c in active_chapters], dtype=float)
+        covered = (dm <= radii[None, :]).any(axis=1)
+    else:
+        covered = np.zeros(len(zip_geo_with_coverage), dtype=bool)
     zip_geo_with_coverage["covered"] = covered
     zip_geo_with_coverage["is_center_zip"] = zip_geo_with_coverage["Zip Code"].isin(selected_center_zip_map)
     zip_geo_with_coverage["center_chapter"] = zip_geo_with_coverage["Zip Code"].map(selected_center_zip_map).fillna("")
@@ -635,7 +638,6 @@ coverage_lookup: dict[str, bool] = {}
 center_zip_lookup: dict[str, bool] = {}
 center_chapter_lookup: dict[str, str] = {}
 zip_polygons: list[dict] = []
-missing_covered_zips: list[str] = []
 covered_zips: tuple[str, ...] = ()
 if not zip_geo_with_coverage.empty:
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
@@ -643,7 +645,7 @@ if not zip_geo_with_coverage.empty:
 
     if covered_zips:
         # Cache lookup dicts in session state — rebuilt only when covered set changes.
-        _lookup_key = (covered_zips, tuple(sorted(selected_center_zip_map.keys())))
+        _lookup_key = (covered_zips, selected_center_zip_keys)
         if st.session_state.get("_lookup_cache_key") != _lookup_key:
             _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
             st.session_state["_coverage_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
@@ -667,7 +669,7 @@ if not zip_geo_with_coverage.empty:
         zip_polygons = st.session_state.get("_zip_polygons", [])
 # Render ZIP polygons with coverage highlighting
 # Cache assembled polygon_features in session state — skip rebuild if inputs unchanged.
-_pfeat_key = (covered_zips, polygon_stride, tuple(sorted(selected_center_zip_map.keys())))
+_pfeat_key = (covered_zips, polygon_stride, selected_center_zip_keys)
 if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
     _polygon_features: list[dict] = []
     for feature in zip_polygons:
