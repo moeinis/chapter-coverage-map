@@ -64,6 +64,8 @@ DEFAULT_ZIP_TABLE_PATHS = [
     BASE_DIR / "data" / "Chapters_2020_zip codes.csv",
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
+MAX_RENDERED_POLYGONS = 800
+MAX_RENDERED_LABELS = 1200
 
 
 def load_local_env() -> None:
@@ -432,7 +434,13 @@ with st.sidebar:
         index=1,
         help="Use full US ZIP centroid dataset for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
     )
-    performance_mode = st.checkbox("Performance mode (faster map load)", value=True)
+    view_mode = st.selectbox(
+        "View mode",
+        options=["Fast (recommended)", "Balanced", "Detailed"],
+        index=0,
+        help="Controls default map detail and payload size sent to the browser.",
+    )
+    performance_mode = view_mode == "Fast (recommended)"
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
@@ -448,46 +456,57 @@ with st.sidebar:
             step=5,
             key=f"radius_{chapter}",
         )
-    default_polygon_stride_index = 4 if performance_mode else 2
-    polygon_stride = st.selectbox("ZIP boundary detail (lower=faster)", options=[1, 2, 3, 4, 5, 6], index=default_polygon_stride_index)
-    render_all_covered = st.checkbox(
-        "Render all covered ZIP boundaries",
-        value=False,
-        help="When enabled, all ZIP boundaries inside selected circles are rendered.",
+    mode_defaults = {
+        "Fast (recommended)": {"stride": 6, "covered": 120, "uncovered": 120, "labels": 400},
+        "Balanced": {"stride": 4, "covered": 260, "uncovered": 200, "labels": 800},
+        "Detailed": {"stride": 3, "covered": 450, "uncovered": 300, "labels": 1200},
+    }
+    defaults = mode_defaults[view_mode]
+
+    covered_render_limit = st.slider(
+        "Covered ZIP boundaries to render",
+        min_value=20,
+        max_value=MAX_RENDERED_POLYGONS,
+        value=defaults["covered"],
+        step=20,
+        help="Hard-capped to keep browser payload below Streamlit message limits.",
     )
-    if render_all_covered:
-        covered_render_limit = 999999
-        st.caption("All covered ZIP boundaries will be rendered.")
-    else:
-        covered_render_limit = st.slider(
-            "Covered ZIP boundaries to render",
-            min_value=20,
-            max_value=2000,
-            value=120 if performance_mode else 300,
-            step=20,
-        )
-    auto_show_covered = st.checkbox(
-        "Show covered ZIP boundaries automatically",
-        value=False,
-        help="Displays ZIP boundaries inside selected chapter circles on load.",
+    uncovered_render_limit = st.slider(
+        "Uncovered ZIP boundaries to render",
+        min_value=0,
+        max_value=MAX_RENDERED_POLYGONS,
+        value=defaults["uncovered"],
+        step=20,
+        help="Uncovered ZIPs are optional and capped for stability.",
     )
     show_zip_labels = st.checkbox(
         "Show ZIP code labels",
-        value=True,
+        value=view_mode != "Fast (recommended)",
         help="Display ZIP code numbers on the map at each covered ZIP centroid.",
     )
+    zip_label_limit = st.slider(
+        "Max ZIP labels",
+        min_value=100,
+        max_value=MAX_RENDERED_LABELS,
+        value=defaults["labels"],
+        step=100,
+        help="Limits label payload to keep map responsive.",
+    )
+    with st.expander("Advanced", expanded=False):
+        default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
+        polygon_stride = st.selectbox(
+            "ZIP boundary detail (lower=faster)",
+            options=[1, 2, 3, 4, 5, 6],
+            index=default_polygon_stride_index,
+        )
+
     if "load_covered_requested" not in st.session_state:
-        st.session_state["load_covered_requested"] = auto_show_covered
+        st.session_state["load_covered_requested"] = False
     if "load_uncovered_requested" not in st.session_state:
         st.session_state["load_uncovered_requested"] = False
-    if "auto_show_prev" not in st.session_state:
-        st.session_state["auto_show_prev"] = auto_show_covered
-    elif auto_show_covered and not st.session_state["auto_show_prev"]:
-        st.session_state["load_covered_requested"] = True
-    st.session_state["auto_show_prev"] = auto_show_covered
 
     c_a, c_b = st.columns(2)
-    if c_a.button("Load covered ZIPs"):
+    if c_a.button("Load covered boundaries"):
         st.session_state["load_covered_requested"] = True
         st.rerun()
     if c_b.button("Reset layers"):
@@ -495,17 +514,9 @@ with st.sidebar:
         st.session_state["load_uncovered_requested"] = False
         st.rerun()
 
-    st.info("Tip: Move chapter sliders to update circles and ZIP highlighting in real time.")
-    st.caption("Legend: Yellow = chapter centroid ZIP. Green = covered ZIP boundary. Red = uncovered ZIP boundary.")
-    st.markdown("### ✅ Must-do checklist")
-    checklist_items = [
-        ("All 13 chapters selected", len(selected_chapters) == len(CHAPTERS)),
-        ("Using All US ZIP dataset", zip_dataset_scope == "All US ZIP centroids"),
-        ("Performance mode ON", bool(performance_mode)),
-        ("Boundaries are on-demand", not bool(auto_show_covered)),
-    ]
-    for title, done in checklist_items:
-        st.caption(f"{'✅' if done else '⬜'} {title}")
+    st.info("Tip: Start in Fast mode, then switch to Balanced/Detailed for closer inspection.")
+    st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
+    st.caption(f"Safety caps: polygons ≤ {MAX_RENDERED_POLYGONS}, labels ≤ {MAX_RENDERED_LABELS}")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
 
 if zip_dataset_scope == "Project ZIP table":
@@ -638,7 +649,7 @@ if not zip_geo_with_coverage.empty:
     st.session_state["covered_zips_all"] = covered_zips
 
     if st.session_state.get("load_covered_requested", False) and covered_zips:
-        covered_batch = covered_zips if render_all_covered else covered_zips[:covered_render_limit]
+        covered_batch = covered_zips[: min(covered_render_limit, MAX_RENDERED_POLYGONS)]
         with st.spinner(f"Loading {len(covered_batch)} covered ZIP boundaries..."):
             try:
                 polygon_map = load_cached_polygons_for_zips(covered_batch, point_stride=polygon_stride)
@@ -648,10 +659,11 @@ if not zip_geo_with_coverage.empty:
                 st.warning(f"Covered ZIP boundaries could not load: {ex}")
 
     if st.session_state.get("load_uncovered_requested", False) and uncovered_zips:
-        with st.spinner(f"Loading {len(uncovered_zips)} uncovered ZIP boundaries..."):
+        uncovered_batch = uncovered_zips[: min(uncovered_render_limit, MAX_RENDERED_POLYGONS)]
+        with st.spinner(f"Loading {len(uncovered_batch)} uncovered ZIP boundaries..."):
             try:
-                polygon_map = load_cached_polygons_for_zips(uncovered_zips, point_stride=polygon_stride)
-                zip_polygons.extend([polygon_map[z] for z in uncovered_zips if z in polygon_map])
+                polygon_map = load_cached_polygons_for_zips(uncovered_batch, point_stride=polygon_stride)
+                zip_polygons.extend([polygon_map[z] for z in uncovered_batch if z in polygon_map])
             except Exception as ex:
                 st.warning(f"Uncovered ZIP boundaries could not load: {ex}")
 # Render ZIP polygons with coverage highlighting
@@ -696,6 +708,7 @@ zip_labels_rendered = 0
 if show_zip_labels and not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
+        label_points = label_points.head(min(zip_label_limit, MAX_RENDERED_LABELS)).copy()
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
             label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
         label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
@@ -790,17 +803,17 @@ if not zip_geo_with_coverage.empty:
                 st.write("**Chapter coverage summary**")
                 st.dataframe(ch_stats_df, width="stretch", hide_index=True)
 
-            loaded_covered = len(st.session_state.get("covered_zips_all") or []) if (st.session_state.get("load_covered_requested", False) and render_all_covered) else (min(covered_render_limit, len(st.session_state.get("covered_zips_all") or [])) if st.session_state.get("load_covered_requested", False) else 0)
+            loaded_covered = min(covered_render_limit, len(st.session_state.get("covered_zips_all") or [])) if st.session_state.get("load_covered_requested", False) else 0
             total_covered = len(st.session_state.get("covered_zips_all") or [])
             if not st.session_state.get("load_covered_requested", False):
-                st.write("Map showing circles only for instant load. Click **Load covered ZIPs** in the sidebar.")
+                st.write("Map showing circles only for instant load. Click **Load covered boundaries** in the sidebar.")
             elif total_covered > loaded_covered > 0:
-                st.write(f"Map showing **{loaded_covered} of {total_covered}** covered ZIP boundaries.")
+                st.write(f"Map showing **{loaded_covered} of {total_covered}** covered ZIP boundaries (capped for browser stability).")
             elif total_covered > 0:
                 st.write(f"Map showing **{loaded_covered}** covered ZIP boundaries.")
 
             if uncovered_count > 0 and not st.session_state.get("load_uncovered_requested", False):
-                if st.button(f"Load uncovered ZIPs ({uncovered_count}) on map"):
+                if st.button(f"Load uncovered ZIPs on map (max {uncovered_render_limit})"):
                     st.session_state["load_uncovered_requested"] = True
                     st.rerun()
             elif st.session_state.get("load_uncovered_requested", False):
