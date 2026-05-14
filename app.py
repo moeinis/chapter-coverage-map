@@ -65,6 +65,8 @@ DEFAULT_ZIP_TABLE_PATHS = [
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
 MAX_RENDERED_POLYGONS = 800
+DEFAULT_RENDERED_LABELS = 220
+DEFAULT_LABEL_MIN_ZOOM = 3.5
 
 # Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
 POLYGON_CACHE_BY_STRIDE: dict[int, dict[str, dict]] = {}
@@ -713,7 +715,40 @@ if zip_polygons:
         )
     )
 
+# ZIP code label layer — auto-on with safe defaults (no sidebar controls).
 zip_labels_rendered = 0
+if not ultra_fast_mode and not zip_geo_with_coverage.empty:
+    label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
+    if not label_points.empty:
+        label_cap = DEFAULT_RENDERED_LABELS
+        if len(label_points) > label_cap:
+            step = max(1, len(label_points) // label_cap)
+            label_points = label_points.iloc[::step].head(label_cap).copy()
+        if "longitude" in label_points.columns and "latitude" in label_points.columns:
+            label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
+        label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
+        label_points["text_color"] = label_points["is_center_zip"].map(
+            lambda is_center: [255, 220, 0, 255] if bool(is_center) else [35, 35, 35, 235]
+        )
+        zip_labels_rendered = len(label_points)
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=label_points,
+                get_position="[lon, lat]",
+                get_text="label",
+                get_color="text_color",
+                get_size=700,
+                size_units="'meters'",
+                size_min_pixels=7,
+                size_max_pixels=13,
+                min_zoom=DEFAULT_LABEL_MIN_ZOOM,
+                get_angle=0,
+                get_text_anchor="'middle'",
+                get_alignment_baseline="'center'",
+                pickable=False,
+            )
+        )
 
 _total_zips = int(len(zip_geo_with_coverage)) if not zip_geo_with_coverage.empty else 0
 _cov_pct = f"{100 * covered_total / _total_zips:.1f}%" if _total_zips > 0 else "N/A"
@@ -743,8 +778,7 @@ elif payload_score <= 2600:
 else:
     payload_class = "Heavy"
 
-labels_state = "Off"
-labels_state = "Off"
+labels_state = f"On (zoom ≥ {DEFAULT_LABEL_MIN_ZOOM:.1f})" if not ultra_fast_mode else "Off"
 
 hud_mode = "Ultra-fast" if ultra_fast_mode else view_mode
 hud_limits = f"Inside:{inside_render_cap}"
