@@ -64,7 +64,7 @@ DEFAULT_ZIP_TABLE_PATHS = [
     BASE_DIR / "data" / "Chapters_2020_zip codes.csv",
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
-DEFAULT_LABEL_MIN_ZOOM = 3.5
+DEFAULT_LABEL_MIN_ZOOM = 5.0
 
 # Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
 POLYGON_CACHE_BY_STRIDE: dict[int, dict[str, dict]] = {}
@@ -438,7 +438,7 @@ def compute_zip_label_style(current_zoom: float, size_scale: float = 1.0) -> dic
         "size_meters": (450 + (zoom_factor * 170)) * size_scale,
         "min_pixels": max(3, int(round((4 + (zoom_factor * 1.5)) * size_scale))),
         "max_pixels": max(7, int(round((9 + (zoom_factor * 2.5)) * size_scale))),
-        "min_zoom": max(3.0, min(DEFAULT_LABEL_MIN_ZOOM, float(current_zoom) - 0.2)),
+        "min_zoom": DEFAULT_LABEL_MIN_ZOOM,
     }
 
 
@@ -461,14 +461,14 @@ with st.sidebar:
     )
     show_zip_numbers = st.checkbox(
         "Show ZIP code labels",
-        value=False,
+        value=True,
         help="Turn ZIP number labels on or off.",
     )
     zip_label_size = st.slider(
         "ZIP label size",
         min_value=0.6,
         max_value=1.8,
-        value=1.0,
+        value=0.8,
         step=0.1,
         disabled=not show_zip_numbers,
         help="Adjust ZIP label font size relative to the map zoom.",
@@ -585,9 +585,19 @@ layers: list[pdk.Layer] = []
 
 if not chapter_df.empty:
     chapter_df = chapter_df.copy()
+    center_zip_lookup_by_chapter = (
+        selected_center_zip_df.set_index("Chapter")["Center Zip Code"].to_dict()
+        if not selected_center_zip_df.empty else {}
+    )
     chapter_df["radius_meters"] = chapter_df["radius_miles"] * 1609.34
     chapter_df["fill_color"] = [[37, 99, 235, 45]] * len(chapter_df)
     chapter_df["line_color"] = [[37, 99, 235, 235]] * len(chapter_df)
+    chapter_df["hover_title"] = chapter_df["name"]
+    chapter_df["hover_type"] = "Chapter radius"
+    chapter_df["hover_detail"] = chapter_df.apply(
+        lambda row: f"{CHAPTERS[row['name']]['city']} • {row['radius_miles']} mi • Center ZIP {center_zip_lookup_by_chapter.get(row['name'], 'N/A')}",
+        axis=1,
+    )
     chapter_pickable = True
 
     layers.append(
@@ -662,6 +672,9 @@ if zip_polygons:
         polygon_features.append(
             {
                 "type": "Feature",
+                "hover_title": z,
+                "hover_type": "Center ZIP" if center_zip_flag else ("Covered ZIP" if covered_flag else "ZIP"),
+                "hover_detail": center_chapter_lookup.get(z, "Inside selected chapter radius") if center_zip_flag else ("Inside selected chapter radius" if covered_flag else "ZIP boundary"),
                 "properties": {
                     **feature.get("properties", {}),
                     "covered": covered_flag,
@@ -739,8 +752,7 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-tooltip_html = "<b>Chapter:</b> {name}<br/><b>Radius:</b> {radius_miles} mi"
-tooltip_html += "<br/><b>ZIP:</b> {zip}<br/><b>Covered:</b> {covered}<br/><b>Center ZIP for:</b> {center_chapter}"
+tooltip_html = "<b>{hover_title}</b><br/><b>Type:</b> {hover_type}<br/>{hover_detail}"
 
 deck = pdk.Deck(
     layers=layers,
