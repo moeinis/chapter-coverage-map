@@ -800,6 +800,32 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
+# Performance HUD: quick visibility into active speed/safety settings.
+payload_score = len(zip_polygons) * 3 + zip_labels_rendered
+if ultra_fast_mode:
+    payload_class = "Ultra-light"
+elif payload_score <= 1200:
+    payload_class = "Light"
+elif payload_score <= 2600:
+    payload_class = "Medium"
+else:
+    payload_class = "Heavy"
+
+labels_state = "Off"
+if show_zip_labels and not ultra_fast_mode:
+    labels_state = f"On (zoom ≥ {label_min_zoom:.1f})"
+
+hud_mode = "Ultra-fast" if ultra_fast_mode else view_mode
+hud_limits = f"C:{covered_render_limit} U:{uncovered_render_limit} L:{zip_label_limit if show_zip_labels else 0}"
+hud_render = f"P:{len(zip_polygons)}  Z:{zip_labels_rendered}"
+
+hud_a, hud_b, hud_c, hud_d = st.columns(4)
+hud_a.metric("Perf mode", hud_mode)
+hud_b.metric("Payload class", payload_class)
+hud_c.metric("Active caps", hud_limits)
+hud_d.metric("Rendered now", hud_render)
+st.caption(f"Labels: {labels_state} • Initial zoom: {map_zoom:.1f} • Stride: {polygon_stride if not ultra_fast_mode else 'N/A'}")
+
 tooltip_html = "<b>Chapter:</b> {name}<br/><b>Radius:</b> {radius_miles} mi"
 if not performance_mode:
     tooltip_html += "<br/><b>ZIP:</b> {zip}<br/><b>Covered:</b> {covered}<br/><b>Center ZIP for:</b> {center_chapter}"
