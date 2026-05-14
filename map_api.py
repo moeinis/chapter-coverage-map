@@ -180,6 +180,7 @@ def precompute_distance_matrix() -> pd.DataFrame:
     d_lon = zip_lon[:, None] - chapter_lon[None, :]
 
     a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
     earth_radius_miles = 3959.0
     dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
 
@@ -283,66 +284,6 @@ def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int 
     return {z: cached_map[z] for z in requested if z in cached_map}
 
 
-def load_polygons_by_coverage(
-    coverage_lookup: Dict[str, bool],
-    point_stride: int,
-    covered_limit: int,
-    uncovered_limit: int,
-) -> List[dict]:
-    shp_path = ensure_zcta_files()
-    reader = shapefile.Reader(shp_path)
-    fields = [f[0] for f in reader.fields[1:]]
-
-    features: List[dict] = []
-    covered_count = 0
-    uncovered_count = 0
-
-    for sr in reader.iterShapeRecords():
-        rec = dict(zip(fields, sr.record))
-        zcta = str(rec.get("ZCTA5CE20", "")).zfill(5)
-
-        covered_flag = coverage_lookup.get(zcta)
-        if covered_flag is None:
-            continue
-
-        if covered_flag and covered_count >= covered_limit:
-            continue
-        if (not covered_flag) and uncovered_count >= uncovered_limit:
-            continue
-
-        shape = sr.shape
-        points = shape.points
-        parts = list(shape.parts) + [len(points)]
-        rings = []
-        for i in range(len(parts) - 1):
-            ring = points[parts[i] : parts[i + 1]]
-            if point_stride > 1:
-                ring = ring[::point_stride] + ([ring[-1]] if ring else [])
-            if len(ring) >= 3:
-                rings.append([[p[0], p[1]] for p in ring])
-
-        if not rings:
-            continue
-
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {"zip": zcta, "covered": bool(covered_flag)},
-                "geometry": {"type": "Polygon", "coordinates": rings},
-            }
-        )
-
-        if covered_flag:
-            covered_count += 1
-        else:
-            uncovered_count += 1
-
-        if covered_count >= covered_limit and uncovered_count >= uncovered_limit:
-            break
-
-    return features
-
-
 def compute_coverage(circles: List[CircleInput]) -> pd.DataFrame:
     zip_geo = geocode_zip_centroids().copy()
     distance_matrix = precompute_distance_matrix()
@@ -389,20 +330,35 @@ def polygons(req: PolygonRequest) -> dict:
     coverage_lookup = dict(zip(zips, zip_geo["covered"].astype(bool)))
 
     target_uncovered = uncovered_limit if req.include_uncovered else 0
-    features = load_polygons_by_coverage(
-        coverage_lookup=coverage_lookup,
-        point_stride=stride,
-        covered_limit=covered_limit,
-        uncovered_limit=target_uncovered,
-    )
+    covered_zip_batch = tuple(zips[zip_geo["covered"]].tolist()[:covered_limit])
+    uncovered_zip_batch = tuple(zips[~zip_geo["covered"]].tolist()[:target_uncovered])
+    request_zip_batch = covered_zip_batch + uncovered_zip_batch
+
+    polygon_map = load_cached_polygons_for_zips(request_zip_batch, point_stride=stride) if request_zip_batch else {}
+    features = []
+    for z in request_zip_batch:
+        f = polygon_map.get(str(z).zfill(5))
+        if not f:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    **f.get("properties", {}),
+                    "covered": bool(coverage_lookup.get(str(z).zfill(5), False)),
+                },
+                "geometry": f.get("geometry", {}),
+            }
+        )
 
     logger.info(
-        "polygons_request_ok chapters=%d stride=%d covered_limit=%d include_uncovered=%s rendered=%d",
+        "polygons_request_ok chapters=%d stride=%d covered_limit=%d include_uncovered=%s rendered=%d requested=%d",
         len(selected),
         stride,
         covered_limit,
         str(bool(req.include_uncovered)).lower(),
         len(features),
+        len(request_zip_batch),
     )
 
     return {

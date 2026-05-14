@@ -130,6 +130,7 @@ def covered_mask_for_circles(zip_geo_df: pd.DataFrame, circles: list[dict]) -> p
         d_lon = lon - c_lon
 
         a = np.sin(d_lat / 2.0) ** 2 + np.cos(c_lat) * np.cos(lat) * np.sin(d_lon / 2.0) ** 2
+        a = np.clip(a, 0.0, 1.0)
         dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
         covered |= dist_miles <= float(c["radius_miles"])
 
@@ -154,6 +155,7 @@ def precompute_all_us_zip_chapter_distances() -> pd.DataFrame:
     d_lon = zip_lon[:, None] - chapter_lon[None, :]
 
     a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
     dist_miles = 2.0 * 3959.0 * np.arcsin(np.sqrt(a))
     result = pd.DataFrame(dist_miles, columns=chapter_names)
     result.index = zip_geo_df["Zip Code"].astype(str).str.zfill(5).values
@@ -176,6 +178,7 @@ def precompute_zip_chapter_distances(zip_geo_df: pd.DataFrame) -> pd.DataFrame:
     d_lon = zip_lon[:, None] - chapter_lon[None, :]
 
     a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
     earth_radius_miles = 3959.0
     dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
 
@@ -282,6 +285,7 @@ def compute_chapter_center_zips() -> pd.DataFrame:
     d_lon = zip_lon[:, None] - chapter_lon[None, :]
 
     a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
     earth_radius_miles = 3959.0
     dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
     nearest_zip_idx = np.argmin(dist_miles, axis=0)

@@ -29,3 +29,7 @@ jobs:
       - name: API import smoke
         run: |
           python -c "import map_api; print('map_api_import_ok')"
+
+      - name: API endpoint regression smoke
+        run: |
+          python scripts/ci_api_smoke.py
