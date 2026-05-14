@@ -338,7 +338,6 @@ def ensure_chapter_center_zips_present(zip_geo_df: pd.DataFrame) -> pd.DataFrame
     return pd.concat([merged, missing_center_rows], ignore_index=True).drop_duplicates(subset=["Zip Code"], keep="first")
 
 
-@st.cache_data(show_spinner=False)
 def load_zip_polygons_map(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
     shp_path = ensure_zcta_files()
     reader = shapefile.Reader(shp_path)
@@ -384,7 +383,7 @@ def load_zip_polygons_map(zip_codes: tuple[str, ...], point_stride: int = 3) -> 
     return features_by_zip
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_zcta_record_index() -> dict[str, int]:
     shp_path = ensure_zcta_files()
     reader = shapefile.Reader(shp_path)
@@ -402,7 +401,6 @@ def load_zcta_record_index() -> dict[str, int]:
     return out
 
 
-@st.cache_data(show_spinner=False)
 def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
     cache_path = DATA_DIR / f"project_zip_polygons_stride_{point_stride}.geojson"
 
@@ -475,7 +473,7 @@ with st.sidebar:
         default=list(CHAPTERS.keys()),
     )
 
-    defaults = {"stride": 5}
+    defaults = {"stride": 6}
 
     map_zoom = st.slider(
         "Initial map zoom",
@@ -572,6 +570,10 @@ elif not zip_geo.empty:
 
 chapter_circles = circles_from_sidebar(selected_chapters)
 all_circles = chapter_circles.copy()
+coverage_signature = (
+    zip_dataset_scope,
+    tuple((c["name"], float(c["radius_miles"])) for c in sorted(all_circles, key=lambda x: x["name"])),
+)
 
 distance_matrix: pd.DataFrame = pd.DataFrame()
 zip_geo_with_coverage = pd.DataFrame()
@@ -593,13 +595,20 @@ if not zip_geo.empty:
         distance_matrix.index = zip_geo_with_coverage.index
     else:
         distance_matrix = precompute_zip_chapter_distances(zip_geo_with_coverage)
-    active_chapters = [c for c in all_circles if c["name"] in distance_matrix.columns]
-    if active_chapters:
-        dm = distance_matrix[[c["name"] for c in active_chapters]].to_numpy(dtype=float)
-        radii = np.array([float(c["radius_miles"]) for c in active_chapters], dtype=float)
-        covered = (dm <= radii[None, :]).any(axis=1)
+    covered_cache_key = (coverage_signature, len(zip_geo_with_coverage))
+    cached_covered = st.session_state.get("_covered_mask") if st.session_state.get("_covered_cache_key") == covered_cache_key else None
+    if cached_covered is not None:
+        covered = cached_covered
     else:
-        covered = np.zeros(len(zip_geo_with_coverage), dtype=bool)
+        active_chapters = [c for c in all_circles if c["name"] in distance_matrix.columns]
+        if active_chapters:
+            dm = distance_matrix[[c["name"] for c in active_chapters]].to_numpy(dtype=float)
+            radii = np.array([float(c["radius_miles"]) for c in active_chapters], dtype=float)
+            covered = (dm <= radii[None, :]).any(axis=1)
+        else:
+            covered = np.zeros(len(zip_geo_with_coverage), dtype=bool)
+        st.session_state["_covered_mask"] = covered
+        st.session_state["_covered_cache_key"] = covered_cache_key
     zip_geo_with_coverage["covered"] = covered
     zip_geo_with_coverage["is_center_zip"] = zip_geo_with_coverage["Zip Code"].isin(selected_center_zip_map)
     zip_geo_with_coverage["center_chapter"] = zip_geo_with_coverage["Zip Code"].map(selected_center_zip_map).fillna("")
@@ -670,7 +679,7 @@ if not zip_geo_with_coverage.empty:
 
     if covered_zips:
         # Cache lookup dicts in session state — rebuilt only when covered set changes.
-        _lookup_key = (covered_zips, selected_center_zip_keys)
+        _lookup_key = (coverage_signature, selected_center_zip_keys)
         if st.session_state.get("_lookup_cache_key") != _lookup_key:
             _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
             st.session_state["_coverage_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
@@ -681,20 +690,20 @@ if not zip_geo_with_coverage.empty:
         center_zip_lookup = st.session_state["_center_zip_lookup"]
         center_chapter_lookup = st.session_state["_center_chapter_lookup"]
 
-        _poly_need_load = st.session_state.get("_poly_load_key") != (covered_zips, polygon_stride)
+        _poly_need_load = st.session_state.get("_poly_load_key") != (coverage_signature, polygon_stride)
         if _poly_need_load:
             with st.spinner(f"Loading {len(covered_zips):,} ZIP boundaries inside circles..."):
                 try:
                     polygon_map = load_cached_polygons_for_zips(covered_zips, point_stride=polygon_stride)
                     st.session_state["_zip_polygons"] = [polygon_map[z] for z in covered_zips if z in polygon_map]
-                    st.session_state["_poly_load_key"] = (covered_zips, polygon_stride)
+                    st.session_state["_poly_load_key"] = (coverage_signature, polygon_stride)
                 except Exception as ex:
                     st.warning(f"ZIP boundaries could not load: {ex}")
                     st.session_state["_zip_polygons"] = []
         zip_polygons = st.session_state.get("_zip_polygons", [])
 # Render ZIP polygons with coverage highlighting
 # Cache assembled polygon_features in session state — skip rebuild if inputs unchanged.
-_pfeat_key = (covered_zips, polygon_stride, selected_center_zip_keys)
+_pfeat_key = (coverage_signature, polygon_stride, selected_center_zip_keys)
 if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
     _polygon_features: list[dict] = []
     for feature in zip_polygons:
