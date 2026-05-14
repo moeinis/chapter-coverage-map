@@ -740,24 +740,46 @@ if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
 
 polygon_features: list[dict] = st.session_state.get("_polygon_features", []) if zip_polygons else []
 if polygon_features:
+    center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") == "Center ZIP"]
+    non_center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") != "Center ZIP"]
 
-    layers.append(
-        pdk.Layer(
-            "GeoJsonLayer",
-            data={"type": "FeatureCollection", "features": polygon_features},
-            stroked=True,
-            filled=True,
-            get_fill_color="properties.fill_color",
-            get_line_color="properties.line_color",
-            line_width_min_pixels=1,
-            extruded=transparent_3d_fill,
-            wireframe=transparent_3d_fill,
-            get_elevation=100,
-            pickable=True,
-            auto_highlight=True,
-            highlight_color=[59, 130, 246, 180],
+    if non_center_polygon_features:
+        layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": non_center_polygon_features},
+                stroked=True,
+                filled=True,
+                get_fill_color="properties.fill_color",
+                get_line_color="properties.line_color",
+                line_width_min_pixels=1,
+                extruded=transparent_3d_fill,
+                wireframe=transparent_3d_fill,
+                get_elevation=100,
+                pickable=True,
+                auto_highlight=True,
+                highlight_color=[59, 130, 246, 180],
+            )
         )
-    )
+
+    if center_polygon_features:
+        layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data={"type": "FeatureCollection", "features": center_polygon_features},
+                stroked=True,
+                filled=True,
+                get_fill_color="properties.fill_color",
+                get_line_color="properties.line_color",
+                line_width_min_pixels=2,
+                extruded=False,
+                wireframe=False,
+                get_elevation=0,
+                pickable=True,
+                auto_highlight=True,
+                highlight_color=[0, 0, 0, 220],
+            )
+        )
 
 # ZIP code label layers.
 zip_labels_rendered = 0
