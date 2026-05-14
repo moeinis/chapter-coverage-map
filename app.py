@@ -67,6 +67,9 @@ DEFAULT_ZIP_TABLE_PATHS = [
 MAX_RENDERED_POLYGONS = 800
 MAX_RENDERED_LABELS = 1200
 
+# Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
+POLYGON_CACHE_BY_STRIDE: dict[int, dict[str, dict]] = {}
+
 
 def load_local_env() -> None:
     if not ENV_PATH.exists():
@@ -379,18 +382,22 @@ def load_zcta_record_index() -> dict[str, int]:
 def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
     cache_path = DATA_DIR / f"project_zip_polygons_stride_{point_stride}.geojson"
 
-    cached_map: dict[str, dict] = {}
-    if cache_path.exists():
-        try:
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            features = payload.get("features", [])
-            cached_map = {
-                str(f.get("properties", {}).get("zip", "")).zfill(5): f
-                for f in features
-                if f.get("properties", {}).get("zip")
-            }
-        except Exception:
-            cached_map = {}
+    if point_stride not in POLYGON_CACHE_BY_STRIDE:
+        cached_map: dict[str, dict] = {}
+        if cache_path.exists():
+            try:
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                features = payload.get("features", [])
+                cached_map = {
+                    str(f.get("properties", {}).get("zip", "")).zfill(5): f
+                    for f in features
+                    if f.get("properties", {}).get("zip")
+                }
+            except Exception:
+                cached_map = {}
+        POLYGON_CACHE_BY_STRIDE[point_stride] = cached_map
+
+    cached_map = POLYGON_CACHE_BY_STRIDE[point_stride]
 
     requested = [str(z).zfill(5) for z in zip_codes]
     missing = tuple(z for z in requested if z not in cached_map)
@@ -637,18 +644,16 @@ center_chapter_lookup = {}
 zip_polygons: list[dict] = []
 missing_covered_zips: list[str] = []
 if not zip_geo_with_coverage.empty:
-    _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
-    coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
-    center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
-    center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
-    
-    # Separate covered and uncovered ZIPs
-    covered_zips = tuple(zip_geo_with_coverage[zip_geo_with_coverage["covered"]]["Zip Code"].astype(str).str.zfill(5).tolist())
-    uncovered_zips = tuple(zip_geo_with_coverage[~zip_geo_with_coverage["covered"]]["Zip Code"].astype(str).str.zfill(5).tolist())
-    
+    # Separate covered ZIPs (always needed for counts/message).
+    covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
     st.session_state["covered_zips_all"] = covered_zips
 
     if st.session_state.get("load_covered_requested", False) and covered_zips:
+        if not coverage_lookup:
+            _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
+            coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
+            center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
+            center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
         covered_batch = covered_zips[: min(covered_render_limit, MAX_RENDERED_POLYGONS)]
         with st.spinner(f"Loading {len(covered_batch)} covered ZIP boundaries..."):
             try:
@@ -658,7 +663,13 @@ if not zip_geo_with_coverage.empty:
             except Exception as ex:
                 st.warning(f"Covered ZIP boundaries could not load: {ex}")
 
-    if st.session_state.get("load_uncovered_requested", False) and uncovered_zips:
+    if st.session_state.get("load_uncovered_requested", False):
+        if not coverage_lookup:
+            _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
+            coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
+            center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
+            center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
+        uncovered_zips = tuple(zip_geo_with_coverage.loc[~zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
         uncovered_batch = uncovered_zips[: min(uncovered_render_limit, MAX_RENDERED_POLYGONS)]
         with st.spinner(f"Loading {len(uncovered_batch)} uncovered ZIP boundaries..."):
             try:
@@ -708,7 +719,12 @@ zip_labels_rendered = 0
 if show_zip_labels and not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
-        label_points = label_points.head(min(zip_label_limit, MAX_RENDERED_LABELS)).copy()
+        label_cap = min(zip_label_limit, MAX_RENDERED_LABELS)
+        if len(label_points) > label_cap:
+            step = max(1, len(label_points) // label_cap)
+            label_points = label_points.iloc[::step].head(label_cap).copy()
+        else:
+            label_points = label_points.copy()
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
             label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
         label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
