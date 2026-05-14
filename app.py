@@ -436,30 +436,13 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
 
 with st.sidebar:
     st.subheader("⚙️ Controls")
-    view_mode = st.selectbox(
-        "View mode",
-        options=["Fast (recommended)", "Balanced", "Detailed"],
-        index=0,
-        help="Controls default map detail and payload size sent to the browser.",
-    )
-    performance_mode = view_mode == "Fast (recommended)"
-    ultra_fast_mode = st.checkbox(
-        "Ultra-fast circles-only mode",
-        value=False,
-        help="Skips ZIP coverage/polygon computation and renders chapter circles only.",
-    )
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
         default=list(CHAPTERS.keys()),
     )
 
-    mode_defaults = {
-        "Fast (recommended)": {"stride": 6, "inside": 140},
-        "Balanced": {"stride": 4, "inside": 300},
-        "Detailed": {"stride": 3, "inside": 520},
-    }
-    defaults = mode_defaults[view_mode]
+    defaults = {"stride": 4, "inside": MAX_RENDERED_POLYGONS}
 
     map_zoom = st.slider(
         "Initial map zoom",
@@ -492,7 +475,6 @@ with st.sidebar:
             options=["Project ZIP table", "All US ZIP centroids"],
             index=1,
             help="Use full US ZIP centroids for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
-            disabled=ultra_fast_mode,
         )
         inside_render_cap = st.slider(
             "ZIP boundaries inside circles",
@@ -500,55 +482,34 @@ with st.sidebar:
             max_value=MAX_RENDERED_POLYGONS,
             value=defaults["inside"],
             step=10,
-            help="Simple cap to keep the map smooth.",
-            disabled=ultra_fast_mode,
+            help="How many ZIP boundaries to draw inside circles.",
         )
         transparent_3d_fill = st.checkbox(
             "3D transparent ZIP fill",
             value=True,
-            disabled=ultra_fast_mode,
             help="Adds subtle depth while keeping ZIP polygons transparent and easy to read.",
         )
         default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
         polygon_stride = st.selectbox(
-            "ZIP boundary detail (lower=faster)",
+            "ZIP boundary detail",
             options=[1, 2, 3, 4, 5, 6],
             index=default_polygon_stride_index,
-            disabled=ultra_fast_mode,
-        )
-        show_perf_hud = st.checkbox(
-            "Show Performance HUD",
-            value=False,
-            help="Technical diagnostics hidden by default.",
         )
 
-    # Safe defaults when Advanced controls are disabled by ultra-fast mode.
-    if ultra_fast_mode:
-        zip_dataset_scope = "All US ZIP centroids"
-        inside_render_cap = defaults["inside"]
-        transparent_3d_fill = False
-        polygon_stride = defaults["stride"]
-
-    st.info("Tip: Start in Fast mode, then switch to Balanced/Detailed for closer inspection.")
-    if ultra_fast_mode:
-        st.caption("Ultra-fast mode active: ZIP coverage and polygons are skipped for maximum responsiveness.")
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
 
-if ultra_fast_mode:
-    zip_geo = pd.DataFrame()
+if zip_dataset_scope == "Project ZIP table":
+    try:
+        _ = load_zip_table()
+    except FileNotFoundError as ex:
+        st.error(str(ex))
+        st.stop()
+    zip_geo = geocode_project_zip_centroids()
 else:
-    if zip_dataset_scope == "Project ZIP table":
-        try:
-            _ = load_zip_table()
-        except FileNotFoundError as ex:
-            st.error(str(ex))
-            st.stop()
-        zip_geo = geocode_project_zip_centroids()
-    else:
-        zip_geo = load_all_us_zip_centroids()
+    zip_geo = load_all_us_zip_centroids()
 
-chapter_center_zip_df = pd.DataFrame() if ultra_fast_mode else compute_chapter_center_zips()
+chapter_center_zip_df = compute_chapter_center_zips()
 if not zip_geo.empty:
     zip_geo = ensure_chapter_center_zips_present(zip_geo)
 
@@ -559,7 +520,7 @@ selected_center_zip_map = (
     else {}
 )
 
-if zip_geo.empty and not ultra_fast_mode:
+if zip_geo.empty:
     logger.warning("zip_geo_empty dataset_scope=%s", zip_dataset_scope)
     st.warning("ZIP geocoding not available yet. Install `pgeocode` to enable ZIP highlighting.")
 elif not zip_geo.empty:
@@ -613,7 +574,7 @@ if not chapter_df.empty:
     chapter_df["radius_meters"] = chapter_df["radius_miles"] * 1609.34
     chapter_df["fill_color"] = [[37, 99, 235, 45]] * len(chapter_df)
     chapter_df["line_color"] = [[37, 99, 235, 235]] * len(chapter_df)
-    chapter_pickable = not performance_mode
+    chapter_pickable = True
 
     layers.append(
         pdk.Layer(
@@ -661,7 +622,7 @@ if not zip_geo_with_coverage.empty:
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
     st.session_state["inside_zips_all"] = covered_zips
 
-    if covered_zips and not ultra_fast_mode:
+    if covered_zips:
         if not coverage_lookup:
             _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
             coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
@@ -711,13 +672,13 @@ if zip_polygons:
             extruded=transparent_3d_fill,
             wireframe=transparent_3d_fill,
             get_elevation=100,
-            pickable=not performance_mode,
+            pickable=True,
         )
     )
 
 # ZIP code label layer — auto-on with safe defaults (no sidebar controls).
 zip_labels_rendered = 0
-if not ultra_fast_mode and not zip_geo_with_coverage.empty:
+if not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
         label_cap = DEFAULT_RENDERED_LABELS
@@ -767,39 +728,13 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-# Performance HUD: quick visibility into active speed/safety settings.
-payload_score = len(zip_polygons) * 3 + zip_labels_rendered
-if ultra_fast_mode:
-    payload_class = "Ultra-light"
-elif payload_score <= 1200:
-    payload_class = "Light"
-elif payload_score <= 2600:
-    payload_class = "Medium"
-else:
-    payload_class = "Heavy"
-
-labels_state = f"On (zoom ≥ {DEFAULT_LABEL_MIN_ZOOM:.1f})" if not ultra_fast_mode else "Off"
-
-hud_mode = "Ultra-fast" if ultra_fast_mode else view_mode
-hud_limits = f"Inside:{inside_render_cap}"
-hud_render = f"P:{len(zip_polygons)}  Z:{zip_labels_rendered}"
-
-if show_perf_hud:
-    hud_a, hud_b, hud_c, hud_d = st.columns(4)
-    hud_a.metric("Perf mode", hud_mode)
-    hud_b.metric("Payload class", payload_class)
-    hud_c.metric("Active caps", hud_limits)
-    hud_d.metric("Rendered now", hud_render)
-    st.caption(f"Labels: {labels_state} • Initial zoom: {map_zoom:.1f} • Stride: {polygon_stride if not ultra_fast_mode else 'N/A'}")
-
 tooltip_html = "<b>Chapter:</b> {name}<br/><b>Radius:</b> {radius_miles} mi"
-if not performance_mode:
-    tooltip_html += "<br/><b>ZIP:</b> {zip}<br/><b>Covered:</b> {covered}<br/><b>Center ZIP for:</b> {center_chapter}"
+tooltip_html += "<br/><b>ZIP:</b> {zip}<br/><b>Covered:</b> {covered}<br/><b>Center ZIP for:</b> {center_chapter}"
 
 deck = pdk.Deck(
     layers=layers,
     initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=map_zoom, pitch=0),
-    tooltip=None if performance_mode else {"html": tooltip_html, "style": {"backgroundColor": "#111827", "color": "white"}},
+    tooltip={"html": tooltip_html, "style": {"backgroundColor": "#111827", "color": "white"}},
     map_provider="carto",
     map_style="light",
 )
@@ -809,13 +744,9 @@ map_tab, details_tab = st.tabs(["Map", "Details"])
 with map_tab:
     st.pydeck_chart(deck, width="stretch", height=680)
 
-if ultra_fast_mode:
-    with details_tab:
-        st.info("Ultra-fast mode is on. ZIP coverage calculations and polygon rendering are intentionally skipped for speed.")
-
 if not zip_geo_with_coverage.empty:
     with details_tab:
-        with st.expander("ZIP coverage details", expanded=not performance_mode):
+        with st.expander("ZIP coverage details", expanded=False):
             c1, c2, c3 = st.columns(3)
             covered_count = int(zip_geo_with_coverage["covered"].sum())
             uncovered_count = int((~zip_geo_with_coverage["covered"]).sum())
