@@ -435,12 +435,6 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
 
 with st.sidebar:
     st.subheader("⚙️ Controls")
-    zip_dataset_scope = st.selectbox(
-        "ZIP dataset scope",
-        options=["Project ZIP table", "All US ZIP centroids"],
-        index=1,
-        help="Use full US ZIP centroid dataset for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
-    )
     view_mode = st.selectbox(
         "View mode",
         options=["Fast (recommended)", "Balanced", "Detailed"],
@@ -458,65 +452,14 @@ with st.sidebar:
         list(CHAPTERS.keys()),
         default=list(CHAPTERS.keys()),
     )
-    for chapter in selected_chapters:
-        default_radius = CHAPTERS[chapter]["radius_miles"]
-        st.slider(
-            f"{chapter} radius (mi)",
-            min_value=10,
-            max_value=250,
-            value=default_radius,
-            step=5,
-            key=f"radius_{chapter}",
-        )
+
     mode_defaults = {
-        "Fast (recommended)": {"stride": 6, "covered": 120, "uncovered": 120, "labels": 400},
-        "Balanced": {"stride": 4, "covered": 260, "uncovered": 200, "labels": 800},
-        "Detailed": {"stride": 3, "covered": 450, "uncovered": 300, "labels": 1200},
+        "Fast (recommended)": {"stride": 6, "covered": 120, "uncovered": 120, "labels": 400, "label_zoom": 5.2},
+        "Balanced": {"stride": 4, "covered": 260, "uncovered": 200, "labels": 800, "label_zoom": 4.8},
+        "Detailed": {"stride": 3, "covered": 450, "uncovered": 300, "labels": 1200, "label_zoom": 4.4},
     }
     defaults = mode_defaults[view_mode]
 
-    covered_render_limit = st.slider(
-        "Covered ZIP boundaries to render",
-        min_value=20,
-        max_value=MAX_RENDERED_POLYGONS,
-        value=defaults["covered"],
-        step=20,
-        help="Hard-capped to keep browser payload below Streamlit message limits.",
-        disabled=ultra_fast_mode,
-    )
-    uncovered_render_limit = st.slider(
-        "Uncovered ZIP boundaries to render",
-        min_value=0,
-        max_value=MAX_RENDERED_POLYGONS,
-        value=defaults["uncovered"],
-        step=20,
-        help="Uncovered ZIPs are optional and capped for stability.",
-        disabled=ultra_fast_mode,
-    )
-    show_zip_labels = st.checkbox(
-        "Show ZIP code labels",
-        value=view_mode != "Fast (recommended)",
-        help="Display ZIP code numbers on the map at each covered ZIP centroid.",
-        disabled=ultra_fast_mode,
-    )
-    zip_label_limit = st.slider(
-        "Max ZIP labels",
-        min_value=100,
-        max_value=MAX_RENDERED_LABELS,
-        value=defaults["labels"],
-        step=100,
-        help="Limits label payload to keep map responsive.",
-        disabled=ultra_fast_mode or not show_zip_labels,
-    )
-    label_min_zoom = st.slider(
-        "ZIP labels visible from zoom",
-        min_value=3.5,
-        max_value=8.0,
-        value=5.0,
-        step=0.1,
-        help="Zoom-aware labels: hide labels at low zoom to reduce clutter/render load.",
-        disabled=ultra_fast_mode or not show_zip_labels,
-    )
     map_zoom = st.slider(
         "Initial map zoom",
         min_value=3.0,
@@ -524,7 +467,74 @@ with st.sidebar:
         value=3.6,
         step=0.1,
     )
-    with st.expander("Advanced", expanded=False):
+
+    show_chapter_radius_controls = st.checkbox(
+        "Customize per-chapter radius",
+        value=False,
+        help="Hidden by default to keep the UI clean.",
+    )
+    if show_chapter_radius_controls:
+        for chapter in selected_chapters:
+            default_radius = CHAPTERS[chapter]["radius_miles"]
+            st.slider(
+                f"{chapter} radius (mi)",
+                min_value=10,
+                max_value=250,
+                value=default_radius,
+                step=5,
+                key=f"radius_{chapter}",
+            )
+
+    with st.expander("Advanced settings", expanded=False):
+        zip_dataset_scope = st.selectbox(
+            "ZIP dataset scope",
+            options=["Project ZIP table", "All US ZIP centroids"],
+            index=1,
+            help="Use full US ZIP centroids for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
+            disabled=ultra_fast_mode,
+        )
+        covered_render_limit = st.slider(
+            "Covered ZIP boundaries to render",
+            min_value=20,
+            max_value=MAX_RENDERED_POLYGONS,
+            value=defaults["covered"],
+            step=20,
+            help="Hard-capped to keep browser payload below Streamlit message limits.",
+            disabled=ultra_fast_mode,
+        )
+        uncovered_render_limit = st.slider(
+            "Uncovered ZIP boundaries to render",
+            min_value=0,
+            max_value=MAX_RENDERED_POLYGONS,
+            value=defaults["uncovered"],
+            step=20,
+            help="Uncovered ZIPs are optional and capped for stability.",
+            disabled=ultra_fast_mode,
+        )
+        show_zip_labels = st.checkbox(
+            "Show ZIP code labels",
+            value=view_mode != "Fast (recommended)",
+            help="Display ZIP code numbers on the map at each covered ZIP centroid.",
+            disabled=ultra_fast_mode,
+        )
+        zip_label_limit = st.slider(
+            "Max ZIP labels",
+            min_value=100,
+            max_value=MAX_RENDERED_LABELS,
+            value=defaults["labels"],
+            step=100,
+            help="Limits label payload to keep map responsive.",
+            disabled=ultra_fast_mode or not show_zip_labels,
+        )
+        label_min_zoom = st.slider(
+            "ZIP labels visible from zoom",
+            min_value=3.5,
+            max_value=8.0,
+            value=defaults["label_zoom"],
+            step=0.1,
+            help="Zoom-aware labels: hide labels at low zoom to reduce clutter/render load.",
+            disabled=ultra_fast_mode or not show_zip_labels,
+        )
         default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
         polygon_stride = st.selectbox(
             "ZIP boundary detail (lower=faster)",
@@ -532,6 +542,21 @@ with st.sidebar:
             index=default_polygon_stride_index,
             disabled=ultra_fast_mode,
         )
+        show_perf_hud = st.checkbox(
+            "Show Performance HUD",
+            value=False,
+            help="Technical diagnostics hidden by default.",
+        )
+
+    # Safe defaults when Advanced controls are disabled by ultra-fast mode.
+    if ultra_fast_mode:
+        zip_dataset_scope = "All US ZIP centroids"
+        covered_render_limit = defaults["covered"]
+        uncovered_render_limit = defaults["uncovered"]
+        show_zip_labels = False
+        zip_label_limit = defaults["labels"]
+        label_min_zoom = defaults["label_zoom"]
+        polygon_stride = defaults["stride"]
 
     if "load_covered_requested" not in st.session_state:
         st.session_state["load_covered_requested"] = False
@@ -551,7 +576,6 @@ with st.sidebar:
     if ultra_fast_mode:
         st.caption("Ultra-fast mode active: ZIP coverage, polygons, and ZIP labels are skipped for maximum responsiveness.")
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
-    st.caption(f"Safety caps: polygons ≤ {MAX_RENDERED_POLYGONS}, labels ≤ {MAX_RENDERED_LABELS}")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
 
 if ultra_fast_mode:
@@ -578,10 +602,10 @@ selected_center_zip_map = (
     else {}
 )
 
-if zip_geo.empty:
+if zip_geo.empty and not ultra_fast_mode:
     logger.warning("zip_geo_empty dataset_scope=%s", zip_dataset_scope)
     st.warning("ZIP geocoding not available yet. Install `pgeocode` to enable ZIP highlighting.")
-else:
+elif not zip_geo.empty:
     if zip_dataset_scope == "All US ZIP centroids":
         st.caption(f"Using full US ZIP centroid dataset: {len(zip_geo):,} ZIPs loaded.")
     else:
@@ -819,12 +843,13 @@ hud_mode = "Ultra-fast" if ultra_fast_mode else view_mode
 hud_limits = f"C:{covered_render_limit} U:{uncovered_render_limit} L:{zip_label_limit if show_zip_labels else 0}"
 hud_render = f"P:{len(zip_polygons)}  Z:{zip_labels_rendered}"
 
-hud_a, hud_b, hud_c, hud_d = st.columns(4)
-hud_a.metric("Perf mode", hud_mode)
-hud_b.metric("Payload class", payload_class)
-hud_c.metric("Active caps", hud_limits)
-hud_d.metric("Rendered now", hud_render)
-st.caption(f"Labels: {labels_state} • Initial zoom: {map_zoom:.1f} • Stride: {polygon_stride if not ultra_fast_mode else 'N/A'}")
+if show_perf_hud:
+    hud_a, hud_b, hud_c, hud_d = st.columns(4)
+    hud_a.metric("Perf mode", hud_mode)
+    hud_b.metric("Payload class", payload_class)
+    hud_c.metric("Active caps", hud_limits)
+    hud_d.metric("Rendered now", hud_render)
+    st.caption(f"Labels: {labels_state} • Initial zoom: {map_zoom:.1f} • Stride: {polygon_stride if not ultra_fast_mode else 'N/A'}")
 
 tooltip_html = "<b>Chapter:</b> {name}<br/><b>Radius:</b> {radius_miles} mi"
 if not performance_mode:
