@@ -64,8 +64,6 @@ DEFAULT_ZIP_TABLE_PATHS = [
     BASE_DIR / "data" / "Chapters_2020_zip codes.csv",
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
-MAX_RENDERED_POLYGONS = 800
-DEFAULT_RENDERED_LABELS = 220
 DEFAULT_LABEL_MIN_ZOOM = 3.5
 
 # Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
@@ -442,7 +440,7 @@ with st.sidebar:
         default=list(CHAPTERS.keys()),
     )
 
-    defaults = {"stride": 4, "inside": MAX_RENDERED_POLYGONS}
+    defaults = {"stride": 4}
 
     map_zoom = st.slider(
         "Initial map zoom",
@@ -475,14 +473,6 @@ with st.sidebar:
             options=["Project ZIP table", "All US ZIP centroids"],
             index=1,
             help="Use full US ZIP centroids for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
-        )
-        inside_render_cap = st.slider(
-            "ZIP boundaries inside circles",
-            min_value=50,
-            max_value=MAX_RENDERED_POLYGONS,
-            value=defaults["inside"],
-            step=10,
-            help="How many ZIP boundaries to draw inside circles.",
         )
         transparent_3d_fill = st.checkbox(
             "3D transparent ZIP fill",
@@ -628,7 +618,7 @@ if not zip_geo_with_coverage.empty:
             coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
             center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
             center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
-        inside_batch = covered_zips[: min(inside_render_cap, MAX_RENDERED_POLYGONS)]
+        inside_batch = covered_zips
         with st.spinner(f"Loading {len(inside_batch)} ZIP boundaries inside circles..."):
             try:
                 polygon_map = load_cached_polygons_for_zips(inside_batch, point_stride=polygon_stride)
@@ -644,7 +634,7 @@ if zip_polygons:
         covered_flag = coverage_lookup.get(z, False)
         center_zip_flag = center_zip_lookup.get(z, False)
         fill_color = [255, 220, 0, 180] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
-        line_color = [200, 170, 0, 255] if center_zip_flag else ([22, 101, 52, 210] if covered_flag else [127, 29, 29, 210])
+        line_color = [15, 15, 15, 210]
         polygon_features.append(
             {
                 "type": "Feature",
@@ -681,10 +671,6 @@ zip_labels_rendered = 0
 if not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
-        label_cap = DEFAULT_RENDERED_LABELS
-        if len(label_points) > label_cap:
-            step = max(1, len(label_points) // label_cap)
-            label_points = label_points.iloc[::step].head(label_cap).copy()
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
             label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
         label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
@@ -780,11 +766,9 @@ if not zip_geo_with_coverage.empty:
                 st.dataframe(ch_stats_df, width="stretch", hide_index=True)
 
             total_inside = len(st.session_state.get("inside_zips_all") or [])
-            loaded_inside = min(inside_render_cap, total_inside)
-            if total_inside > loaded_inside > 0:
-                st.write(f"Map showing **{loaded_inside} of {total_inside}** ZIP boundaries inside circles (capped for smooth rendering).")
-            elif total_inside > 0:
-                st.write(f"Map showing **{loaded_inside}** ZIP boundaries inside circles.")
+            loaded_inside = len(zip_polygons)
+            if total_inside > 0:
+                st.write(f"Map showing **{loaded_inside} of {total_inside}** ZIP boundaries inside circles.")
             else:
                 st.write("No ZIP boundaries are inside the selected circles right now.")
 
