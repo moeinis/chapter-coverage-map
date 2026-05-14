@@ -592,13 +592,7 @@ if not chapter_df.empty:
     chapter_df["radius_meters"] = chapter_df["radius_miles"] * 1609.34
     chapter_df["fill_color"] = [[37, 99, 235, 45]] * len(chapter_df)
     chapter_df["line_color"] = [[37, 99, 235, 235]] * len(chapter_df)
-    chapter_df["hover_title"] = chapter_df["name"]
-    chapter_df["hover_type"] = "Chapter radius"
-    chapter_df["hover_detail"] = chapter_df.apply(
-        lambda row: f"{CHAPTERS[row['name']]['city']} • {row['radius_miles']} mi • Center ZIP {center_zip_lookup_by_chapter.get(row['name'], 'N/A')}",
-        axis=1,
-    )
-    chapter_pickable = True
+    chapter_pickable = False
 
     layers.append(
         pdk.Layer(
@@ -725,7 +719,7 @@ if not zip_geo_with_coverage.empty:
                 size_units="'meters'",
                 size_min_pixels=max(8, zip_label_style["min_pixels"] + 2),
                 size_max_pixels=max(14, zip_label_style["max_pixels"] + 2),
-                min_zoom=4.5,
+                min_zoom=4.0,
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
@@ -743,7 +737,7 @@ if not zip_geo_with_coverage.empty:
                 size_units="'meters'",
                 size_min_pixels=max(6, zip_label_style["min_pixels"] + 1),
                 size_max_pixels=max(12, zip_label_style["max_pixels"] + 1),
-                min_zoom=4.5,
+                min_zoom=4.0,
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
@@ -796,7 +790,7 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-tooltip_html = "<b>{hover_title}{properties.hover_title}</b><br/><b>Type:</b> {hover_type}{properties.hover_type}<br/>{hover_detail}{properties.hover_detail}"
+tooltip_html = "<b>{name}{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
 
 deck = pdk.Deck(
     layers=layers,
