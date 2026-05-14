@@ -9,6 +9,14 @@ $SCRIPT = Join-Path $PSScriptRoot "app.py"
 Write-Host "BSF Chapter Coverage Map" -ForegroundColor Cyan
 Write-Host "========================" -ForegroundColor Cyan
 
+# Build marker so UI shows exactly what revision is running.
+$build = "local-dev"
+try {
+    $build = (git rev-parse --short HEAD).Trim()
+} catch {}
+$env:APP_BUILD_VERSION = "git-$build"
+Write-Host "Build: $($env:APP_BUILD_VERSION)" -ForegroundColor DarkCyan
+
 # Kill anything on port 8501
 $procs = Get-NetTCPConnection -LocalPort $PORT -ErrorAction SilentlyContinue |
          Select-Object -ExpandProperty OwningProcess -Unique |

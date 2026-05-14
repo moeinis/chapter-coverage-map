@@ -3,6 +3,7 @@ import math
 import json
 import os
 import logging
+import subprocess
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -31,6 +32,31 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def resolve_build_version() -> str:
+    env_build = os.getenv("APP_BUILD_VERSION", "").strip()
+    if env_build:
+        return env_build
+
+    try:
+        rev = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(BASE_DIR),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if rev:
+            return f"git-{rev}"
+    except Exception:
+        pass
+
+    return "local-dev"
+
+
+BUILD_VERSION = resolve_build_version()
+
 st.markdown(
     """
 <style>
@@ -48,10 +74,9 @@ st.markdown(
 
 st.markdown('<h1 class="main-header">📍 BSF Chapter Coverage Map</h1>', unsafe_allow_html=True)
 st.caption("ZIP boundaries inside circles auto-update as chapter radii change.")
-st.caption("Build: 2026-05-14-production")
+st.caption(f"Build: {BUILD_VERSION}")
 
 
-BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 ZCTA_ZIP_PATH = DATA_DIR / "tl_2020_us_zcta520.zip"

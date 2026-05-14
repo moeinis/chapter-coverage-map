@@ -2,6 +2,13 @@ $ErrorActionPreference = 'Continue'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
+$build = 'local-dev'
+try {
+    $build = (git rev-parse --short HEAD).Trim()
+} catch {}
+$env:APP_BUILD_VERSION = "git-$build"
+Write-Host "[$(Get-Date -Format s)] Build: $($env:APP_BUILD_VERSION)"
+
 $pythonExe = 'C:\Python314\python.exe'
 $logDir = Join-Path $projectRoot 'logs'
 if (-not (Test-Path $logDir)) {
