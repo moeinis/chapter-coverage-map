@@ -47,7 +47,7 @@ st.markdown(
 )
 
 st.markdown('<h1 class="main-header">📍 BSF Chapter Coverage Map</h1>', unsafe_allow_html=True)
-st.caption("Pick chapters and load ZIP boundaries inside chapter circles.")
+st.caption("ZIP boundaries inside circles auto-update as chapter radii change.")
 st.caption("Build: 2026-05-13-streamlit-polished")
 
 
@@ -443,7 +443,7 @@ with st.sidebar:
     performance_mode = view_mode == "Fast (recommended)"
     ultra_fast_mode = st.checkbox(
         "Ultra-fast circles-only mode",
-        value=performance_mode,
+        value=False,
         help="Skips ZIP coverage/polygon computation and renders chapter circles only.",
     )
     selected_chapters = st.multiselect(
@@ -526,17 +526,6 @@ with st.sidebar:
         inside_render_cap = defaults["inside"]
         transparent_3d_fill = False
         polygon_stride = defaults["stride"]
-
-    if "load_inside_requested" not in st.session_state:
-        st.session_state["load_inside_requested"] = False
-
-    c_a, c_b = st.columns(2)
-    if c_a.button("Load ZIPs inside circles", disabled=ultra_fast_mode):
-        st.session_state["load_inside_requested"] = True
-        st.rerun()
-    if c_b.button("Reset layers"):
-        st.session_state["load_inside_requested"] = False
-        st.rerun()
 
     st.info("Tip: Start in Fast mode, then switch to Balanced/Detailed for closer inspection.")
     if ultra_fast_mode:
@@ -670,7 +659,7 @@ if not zip_geo_with_coverage.empty:
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
     st.session_state["inside_zips_all"] = covered_zips
 
-    if st.session_state.get("load_inside_requested", False) and covered_zips:
+    if covered_zips and not ultra_fast_mode:
         if not coverage_lookup:
             _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
             coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
@@ -825,14 +814,14 @@ if not zip_geo_with_coverage.empty:
                 st.write("**Chapter coverage summary**")
                 st.dataframe(ch_stats_df, width="stretch", hide_index=True)
 
-            loaded_inside = min(inside_render_cap, len(st.session_state.get("inside_zips_all") or [])) if st.session_state.get("load_inside_requested", False) else 0
             total_inside = len(st.session_state.get("inside_zips_all") or [])
-            if not st.session_state.get("load_inside_requested", False):
-                st.write("Map showing circles only for instant load. Click **Load ZIPs inside circles** in the sidebar.")
-            elif total_inside > loaded_inside > 0:
+            loaded_inside = min(inside_render_cap, total_inside)
+            if total_inside > loaded_inside > 0:
                 st.write(f"Map showing **{loaded_inside} of {total_inside}** ZIP boundaries inside circles (capped for smooth rendering).")
             elif total_inside > 0:
                 st.write(f"Map showing **{loaded_inside}** ZIP boundaries inside circles.")
+            else:
+                st.write("No ZIP boundaries are inside the selected circles right now.")
 
             show_zip_table = st.checkbox("Show ZIP details table", value=False)
             if show_zip_table:
