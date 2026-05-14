@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.streamlit/
+logs/
+data/tl_2020_us_zcta520/
+data/*.zip
+.vscode/
+.sixth/

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BSF Coverage Map (Fast)</title>
+  <link href="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/web/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <h1>📍 BSF Coverage Map</h1>
+      <p class="muted">MapLibre frontend + Python API</p>
+
+      <label>Boundary detail</label>
+      <select id="stride">
+        <option value="3">3 (smooth)</option>
+        <option value="4">4</option>
+        <option value="5">5 (fast)</option>
+        <option value="6" selected>6 (fastest)</option>
+      </select>
+
+      <label>Covered ZIPs to render first</label>
+      <input id="coveredLimit" type="range" min="20" max="1000" step="20" value="40" />
+      <div class="value" id="coveredLimitValue">40</div>
+
+      <div class="inline-actions">
+        <button id="selectAllBtn" class="secondary-btn" type="button">Select all chapters</button>
+        <button id="clearAllBtn" class="secondary-btn" type="button">Clear all</button>
+      </div>
+
+      <div id="chapterControls"></div>
+
+      <div class="buttons">
+        <button id="applyBtn">Apply / Refresh</button>
+        <button id="loadUncoveredBtn">Load Uncovered Layer</button>
+      </div>
+
+      <div id="stats"></div>
+      <div id="uiNote" class="muted small">Tip: circles update instantly; polygons load only when you click Apply.</div>
+    </aside>
+
+    <main id="map"></main>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+  <script src="/web/main.js"></script>
+</body>
+</html>

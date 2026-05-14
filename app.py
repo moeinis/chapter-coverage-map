@@ -1,14 +1,25 @@
 import streamlit as st
 import math
+import json
+import os
+import logging
 from datetime import datetime
 import pandas as pd
-import folium
-from folium.plugins import Draw
-from streamlit_folium import st_folium
+import numpy as np
+import pydeck as pdk
 from pathlib import Path
 import zipfile
 import requests
 import shapefile
+
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+logger = logging.getLogger("chapter_coverage_map.streamlit")
 
 
 st.set_page_config(
@@ -34,7 +45,8 @@ st.markdown(
 )
 
 st.markdown('<h1 class="main-header">📍 BSF Chapter Coverage Map</h1>', unsafe_allow_html=True)
-st.caption("Drag/resize circles live to update covered ZIP highlights.")
+st.caption("Adjust chapter radius sliders live to update covered ZIP boundaries highlighted in real time.")
+st.caption("Build: 2026-05-13-streamlit-polished")
 
 
 CHAPTERS = {
@@ -60,6 +72,33 @@ ZCTA_ZIP_PATH = DATA_DIR / "tl_2020_us_zcta520.zip"
 ZCTA_DIR = DATA_DIR / "tl_2020_us_zcta520"
 ZCTA_SHP_PATH = ZCTA_DIR / "tl_2020_us_zcta520.shp"
 ZCTA_SOURCE_URL = "https://www2.census.gov/geo/tiger/TIGER2020/ZCTA520/tl_2020_us_zcta520.zip"
+PROJECT_ZIP_CSV_ENV = "BSF_ZIP_TABLE_PATH"
+ENV_PATH = BASE_DIR / ".env"
+DEFAULT_ZIP_TABLE_PATHS = [
+    BASE_DIR / "data" / "Chapters_2020_zip codes.csv",
+    Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
+]
+
+
+def load_local_env() -> None:
+    if not ENV_PATH.exists():
+        return
+    try:
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            k, v = raw.split("=", 1)
+            key = k.strip()
+            val = v.strip().strip('"').strip("'")
+            if key and key not in os.environ and val:
+                os.environ[key] = val
+    except Exception:
+        pass
+
+
+load_local_env()
+logger.info("Streamlit app environment initialized")
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -75,6 +114,74 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def covered_mask_for_circles(zip_geo_df: pd.DataFrame, circles: list[dict]) -> pd.Series:
+    if zip_geo_df.empty or not circles:
+        return pd.Series(False, index=zip_geo_df.index)
+
+    lat = np.radians(zip_geo_df["latitude"].to_numpy(dtype=float))
+    lon = np.radians(zip_geo_df["longitude"].to_numpy(dtype=float))
+    covered = np.zeros(len(zip_geo_df), dtype=bool)
+    earth_radius_miles = 3959.0
+
+    for c in circles:
+        c_lat = math.radians(float(c["lat"]))
+        c_lon = math.radians(float(c["lon"]))
+        d_lat = lat - c_lat
+        d_lon = lon - c_lon
+
+        a = np.sin(d_lat / 2.0) ** 2 + np.cos(c_lat) * np.cos(lat) * np.sin(d_lon / 2.0) ** 2
+        dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
+        covered |= dist_miles <= float(c["radius_miles"])
+
+    return pd.Series(covered, index=zip_geo_df.index)
+
+
+@st.cache_data(show_spinner=False, persist="disk")
+def precompute_all_us_zip_chapter_distances() -> pd.DataFrame:
+    """Disk-persisted distance matrix for all US ZIPs vs all 13 chapters."""
+    zip_geo_df = load_all_us_zip_centroids()
+    if zip_geo_df.empty:
+        return pd.DataFrame()
+
+    chapter_names = list(CHAPTERS.keys())
+    chapter_lat = np.radians(np.array([CHAPTERS[c]["lat"] for c in chapter_names], dtype=float))
+    chapter_lon = np.radians(np.array([CHAPTERS[c]["lon"] for c in chapter_names], dtype=float))
+
+    zip_lat = np.radians(zip_geo_df["latitude"].to_numpy(dtype=float))
+    zip_lon = np.radians(zip_geo_df["longitude"].to_numpy(dtype=float))
+
+    d_lat = zip_lat[:, None] - chapter_lat[None, :]
+    d_lon = zip_lon[:, None] - chapter_lon[None, :]
+
+    a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    dist_miles = 2.0 * 3959.0 * np.arcsin(np.sqrt(a))
+    result = pd.DataFrame(dist_miles, columns=chapter_names)
+    result.index = zip_geo_df["Zip Code"].astype(str).str.zfill(5).values
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def precompute_zip_chapter_distances(zip_geo_df: pd.DataFrame) -> pd.DataFrame:
+    if zip_geo_df.empty:
+        return pd.DataFrame()
+
+    chapter_names = list(CHAPTERS.keys())
+    chapter_lat = np.radians(np.array([CHAPTERS[c]["lat"] for c in chapter_names], dtype=float))
+    chapter_lon = np.radians(np.array([CHAPTERS[c]["lon"] for c in chapter_names], dtype=float))
+
+    zip_lat = np.radians(zip_geo_df["latitude"].to_numpy(dtype=float))
+    zip_lon = np.radians(zip_geo_df["longitude"].to_numpy(dtype=float))
+
+    d_lat = zip_lat[:, None] - chapter_lat[None, :]
+    d_lon = zip_lon[:, None] - chapter_lon[None, :]
+
+    a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    earth_radius_miles = 3959.0
+    dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
+
+    return pd.DataFrame(dist_miles, columns=chapter_names, index=zip_geo_df.index)
+
+
 @st.cache_data(show_spinner=False)
 def ensure_zcta_files() -> str:
     if not ZCTA_SHP_PATH.exists():
@@ -88,9 +195,27 @@ def ensure_zcta_files() -> str:
     return str(ZCTA_SHP_PATH)
 
 
+def resolve_zip_table_path() -> Path:
+    env_path = os.getenv(PROJECT_ZIP_CSV_ENV)
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+
+    for p in DEFAULT_ZIP_TABLE_PATHS:
+        if p.exists():
+            return p
+
+    expected = "\n - ".join([str(p) for p in DEFAULT_ZIP_TABLE_PATHS])
+    raise FileNotFoundError(
+        f"ZIP table CSV not found. Set {PROJECT_ZIP_CSV_ENV} or place the file at:\n - {expected}"
+    )
+
+
 @st.cache_data(show_spinner=False)
 def load_zip_table() -> pd.DataFrame:
-    data = pd.read_csv("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv")
+    csv_path = resolve_zip_table_path()
+    data = pd.read_csv(csv_path)
     data.columns = [c.strip() for c in data.columns]
     data = data[["Zip Code", "BSF Chapter", "State"]].copy()
     data = data.dropna(subset=["Zip Code", "BSF Chapter"])
@@ -101,10 +226,11 @@ def load_zip_table() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def geocode_zip_centroids(zip_df: pd.DataFrame) -> pd.DataFrame:
+def geocode_project_zip_centroids() -> pd.DataFrame:
     try:
         import pgeocode  # lazy import so app still loads if package is missing
 
+        zip_df = load_zip_table()
         nomi = pgeocode.Nominatim("us")
         geo = nomi.query_postal_code(zip_df["Zip Code"].tolist())[["postal_code", "latitude", "longitude"]]
         geo = geo.rename(columns={"postal_code": "Zip Code"})
@@ -116,18 +242,99 @@ def geocode_zip_centroids(zip_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False)
-def load_zip_polygons(zip_codes: tuple[str, ...], point_stride: int = 3) -> list[dict]:
-    shp_path = ensure_zcta_files()
-    wanted = set(zip_codes)
-    reader = shapefile.Reader(shp_path)
-    fields = [f[0] for f in reader.fields[1:]]
-    features = []
+@st.cache_data(show_spinner=False, persist="disk")
+def load_all_us_zip_centroids() -> pd.DataFrame:
+    try:
+        import pgeocode
 
-    for sr in reader.shapeRecords():
-        rec = dict(zip(fields, sr.record))
-        zcta = str(rec.get("ZCTA5CE20", "")).zfill(5)
-        if zcta not in wanted:
+        nomi = pgeocode.Nominatim("us")
+        all_data = nomi._data.copy()
+        if all_data.empty:
+            return pd.DataFrame()
+
+        geo = all_data[["postal_code", "state_code", "latitude", "longitude"]].copy()
+        geo = geo.rename(columns={"postal_code": "Zip Code", "state_code": "State"})
+        geo["Zip Code"] = geo["Zip Code"].astype(str).str.extract(r"(\d{5})")[0]
+        geo = geo.dropna(subset=["Zip Code", "latitude", "longitude"])
+        geo["Zip Code"] = geo["Zip Code"].astype(str).str.zfill(5)
+        geo["BSF Chapter"] = "(not mapped)"
+        geo = geo[["Zip Code", "BSF Chapter", "State", "latitude", "longitude"]]
+        geo = geo.drop_duplicates(subset=["Zip Code"])
+        return geo
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, persist="disk")
+def compute_chapter_center_zips() -> pd.DataFrame:
+    all_zip_geo = load_all_us_zip_centroids()
+    if all_zip_geo.empty:
+        return pd.DataFrame(columns=["Chapter", "Center Zip Code", "State", "latitude", "longitude"])
+
+    chapter_names = list(CHAPTERS.keys())
+    chapter_lat = np.radians(np.array([CHAPTERS[c]["lat"] for c in chapter_names], dtype=float))
+    chapter_lon = np.radians(np.array([CHAPTERS[c]["lon"] for c in chapter_names], dtype=float))
+
+    zip_lat = np.radians(all_zip_geo["latitude"].to_numpy(dtype=float))
+    zip_lon = np.radians(all_zip_geo["longitude"].to_numpy(dtype=float))
+
+    d_lat = zip_lat[:, None] - chapter_lat[None, :]
+    d_lon = zip_lon[:, None] - chapter_lon[None, :]
+
+    a = np.sin(d_lat / 2.0) ** 2 + np.cos(zip_lat)[:, None] * np.cos(chapter_lat)[None, :] * np.sin(d_lon / 2.0) ** 2
+    earth_radius_miles = 3959.0
+    dist_miles = 2.0 * earth_radius_miles * np.arcsin(np.sqrt(a))
+    nearest_zip_idx = np.argmin(dist_miles, axis=0)
+
+    nearest_rows = all_zip_geo.iloc[nearest_zip_idx].reset_index(drop=True)
+    return pd.DataFrame(
+        {
+            "Chapter": chapter_names,
+            "Center Zip Code": nearest_rows["Zip Code"].astype(str).str.zfill(5),
+            "State": nearest_rows["State"].fillna(""),
+            "latitude": nearest_rows["latitude"].to_numpy(dtype=float),
+            "longitude": nearest_rows["longitude"].to_numpy(dtype=float),
+        }
+    )
+
+
+def ensure_chapter_center_zips_present(zip_geo_df: pd.DataFrame) -> pd.DataFrame:
+    center_zip_df = compute_chapter_center_zips()
+    if center_zip_df.empty:
+        return zip_geo_df
+
+    center_rows = center_zip_df.rename(columns={"Center Zip Code": "Zip Code", "Chapter": "BSF Chapter"}).copy()
+    center_rows = center_rows[["Zip Code", "BSF Chapter", "State", "latitude", "longitude"]]
+
+    if zip_geo_df.empty:
+        return center_rows.drop_duplicates(subset=["Zip Code"]).reset_index(drop=True)
+
+    merged = zip_geo_df.copy()
+    merged["Zip Code"] = merged["Zip Code"].astype(str).str.zfill(5)
+    existing_zips = set(merged["Zip Code"])
+    missing_center_rows = center_rows[~center_rows["Zip Code"].isin(existing_zips)].copy()
+    if missing_center_rows.empty:
+        return merged
+
+    return pd.concat([merged, missing_center_rows], ignore_index=True).drop_duplicates(subset=["Zip Code"], keep="first")
+
+
+@st.cache_data(show_spinner=False)
+def load_zip_polygons_map(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
+    shp_path = ensure_zcta_files()
+    reader = shapefile.Reader(shp_path)
+    zcta_index_map = load_zcta_record_index()
+    features_by_zip: dict[str, dict] = {}
+
+    for raw_zip in zip_codes:
+        zcta = str(raw_zip).zfill(5)
+        rec_idx = zcta_index_map.get(zcta)
+        if rec_idx is None:
+            continue
+
+        try:
+            sr = reader.shapeRecord(rec_idx)
+        except Exception:
             continue
 
         shape = sr.shape
@@ -149,15 +356,66 @@ def load_zip_polygons(zip_codes: tuple[str, ...], point_stride: int = 3) -> list
         else:
             geometry = {"type": "Polygon", "coordinates": [rings[0]]}
 
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {"zip": zcta},
-                "geometry": geometry,
-            }
-        )
+        features_by_zip[zcta] = {
+            "type": "Feature",
+            "properties": {"zip": zcta},
+            "geometry": geometry,
+        }
 
-    return features
+    return features_by_zip
+
+
+@st.cache_data(show_spinner=False)
+def load_zcta_record_index() -> dict[str, int]:
+    shp_path = ensure_zcta_files()
+    reader = shapefile.Reader(shp_path)
+    fields = [f[0] for f in reader.fields[1:]]
+    if "ZCTA5CE20" not in fields:
+        return {}
+
+    zcta_idx = fields.index("ZCTA5CE20")
+    out: dict[str, int] = {}
+    for i, rec in enumerate(reader.iterRecords()):
+        try:
+            out[str(rec[zcta_idx]).zfill(5)] = i
+        except Exception:
+            continue
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
+    cache_path = DATA_DIR / f"project_zip_polygons_stride_{point_stride}.geojson"
+
+    cached_map: dict[str, dict] = {}
+    if cache_path.exists():
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            features = payload.get("features", [])
+            cached_map = {
+                str(f.get("properties", {}).get("zip", "")).zfill(5): f
+                for f in features
+                if f.get("properties", {}).get("zip")
+            }
+        except Exception:
+            cached_map = {}
+
+    requested = [str(z).zfill(5) for z in zip_codes]
+    missing = tuple(z for z in requested if z not in cached_map)
+
+    if missing:
+        fetched = load_zip_polygons_map(missing, point_stride=point_stride)
+        cached_map.update(fetched)
+        try:
+            feature_collection = {
+                "type": "FeatureCollection",
+                "features": list(cached_map.values()),
+            }
+            cache_path.write_text(json.dumps(feature_collection), encoding="utf-8")
+        except Exception:
+            pass
+
+    return {z: cached_map[z] for z in requested if z in cached_map}
 
 
 def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
@@ -176,34 +434,19 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
     return circles
 
 
-def circle_from_drawn_polygon(feature: dict) -> dict | None:
-    geom = feature.get("geometry", {})
-    if geom.get("type") != "Polygon":
-        return None
-    coords = geom.get("coordinates", [])
-    if not coords or not coords[0]:
-        return None
-    ring = coords[0]
-    lats = [pt[1] for pt in ring]
-    lons = [pt[0] for pt in ring]
-    center_lat = sum(lats) / len(lats)
-    center_lon = sum(lons) / len(lons)
-    edge_lat, edge_lon = ring[0][1], ring[0][0]
-    radius = haversine_miles(center_lat, center_lon, edge_lat, edge_lon)
-    return {
-        "name": "Drawn circle",
-        "lat": center_lat,
-        "lon": center_lon,
-        "radius_miles": max(radius, 0.1),
-    }
-
-
 with st.sidebar:
     st.subheader("⚙️ Controls")
+    zip_dataset_scope = st.selectbox(
+        "ZIP dataset scope",
+        options=["Project ZIP table", "All US ZIP centroids"],
+        index=1,
+        help="Use full US ZIP centroid dataset for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
+    )
+    performance_mode = st.checkbox("Performance mode (faster map load)", value=True)
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
-        default=["Chicagoland", "Colorado Springs", "Jacksonville", "Tampa", "Utah"],
+        default=list(CHAPTERS.keys()),
     )
     for chapter in selected_chapters:
         default_radius = CHAPTERS[chapter]["radius_miles"]
@@ -215,151 +458,387 @@ with st.sidebar:
             step=5,
             key=f"radius_{chapter}",
         )
-    max_zip_points = st.slider("ZIP markers on map", min_value=200, max_value=6000, value=2000, step=200)
-    polygon_stride = st.selectbox("Polygon detail (faster ↔ smoother)", options=[1, 2, 3, 4], index=2)
-    show_zip_polygons = st.checkbox("Show ZIP polygons on editable map", value=True)
-    st.info("Tip: Use map edit mode to drag/resize circles live.")
+    default_polygon_stride_index = 4 if performance_mode else 2
+    polygon_stride = st.selectbox("ZIP boundary detail (lower=faster)", options=[1, 2, 3, 4, 5, 6], index=default_polygon_stride_index)
+    render_all_covered = st.checkbox(
+        "Render all covered ZIP boundaries",
+        value=False,
+        help="When enabled, all ZIP boundaries inside selected circles are rendered.",
+    )
+    if render_all_covered:
+        covered_render_limit = 999999
+        st.caption("All covered ZIP boundaries will be rendered.")
+    else:
+        covered_render_limit = st.slider(
+            "Covered ZIP boundaries to render",
+            min_value=20,
+            max_value=2000,
+            value=120 if performance_mode else 300,
+            step=20,
+        )
+    auto_show_covered = st.checkbox(
+        "Show covered ZIP boundaries automatically",
+        value=False,
+        help="Displays ZIP boundaries inside selected chapter circles on load.",
+    )
+    show_zip_labels = st.checkbox(
+        "Show ZIP code labels",
+        value=True,
+        help="Display ZIP code numbers on the map at each covered ZIP centroid.",
+    )
+    if "load_covered_requested" not in st.session_state:
+        st.session_state["load_covered_requested"] = auto_show_covered
+    if "load_uncovered_requested" not in st.session_state:
+        st.session_state["load_uncovered_requested"] = False
+    if "auto_show_prev" not in st.session_state:
+        st.session_state["auto_show_prev"] = auto_show_covered
+    elif auto_show_covered and not st.session_state["auto_show_prev"]:
+        st.session_state["load_covered_requested"] = True
+    st.session_state["auto_show_prev"] = auto_show_covered
+
+    c_a, c_b = st.columns(2)
+    if c_a.button("Load covered ZIPs"):
+        st.session_state["load_covered_requested"] = True
+        st.rerun()
+    if c_b.button("Reset layers"):
+        st.session_state["load_covered_requested"] = False
+        st.session_state["load_uncovered_requested"] = False
+        st.rerun()
+
+    st.info("Tip: Move chapter sliders to update circles and ZIP highlighting in real time.")
+    st.caption("Legend: Yellow = chapter centroid ZIP. Green = covered ZIP boundary. Red = uncovered ZIP boundary.")
+    st.markdown("### ✅ Must-do checklist")
+    checklist_items = [
+        ("All 13 chapters selected", len(selected_chapters) == len(CHAPTERS)),
+        ("Using All US ZIP dataset", zip_dataset_scope == "All US ZIP centroids"),
+        ("Performance mode ON", bool(performance_mode)),
+        ("Boundaries are on-demand", not bool(auto_show_covered)),
+    ]
+    for title, done in checklist_items:
+        st.caption(f"{'✅' if done else '⬜'} {title}")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
 
-zip_table = load_zip_table()
-zip_geo = geocode_zip_centroids(zip_table)
+if zip_dataset_scope == "Project ZIP table":
+    try:
+        _ = load_zip_table()
+    except FileNotFoundError as ex:
+        st.error(str(ex))
+        st.stop()
+    zip_geo = geocode_project_zip_centroids()
+else:
+    zip_geo = load_all_us_zip_centroids()
+
+chapter_center_zip_df = compute_chapter_center_zips()
+if not zip_geo.empty:
+    zip_geo = ensure_chapter_center_zips_present(zip_geo)
+
+selected_center_zip_df = chapter_center_zip_df[chapter_center_zip_df["Chapter"].isin(selected_chapters)].copy() if not chapter_center_zip_df.empty else pd.DataFrame()
+selected_center_zip_map = (
+    selected_center_zip_df.groupby("Center Zip Code")["Chapter"].agg(lambda s: ", ".join(sorted(set(s)))).to_dict()
+    if not selected_center_zip_df.empty
+    else {}
+)
 
 if zip_geo.empty:
+    logger.warning("zip_geo_empty dataset_scope=%s", zip_dataset_scope)
     st.warning("ZIP geocoding not available yet. Install `pgeocode` to enable ZIP highlighting.")
-
-zip_polygons = []
-if show_zip_polygons and not zip_table.empty:
-    with st.spinner("Loading ZIP polygons..."):
-        try:
-            zip_polygons = load_zip_polygons(tuple(zip_table["Zip Code"].tolist()), point_stride=polygon_stride)
-        except Exception as ex:
-            st.warning(f"ZIP polygon layer could not be loaded: {ex}")
+else:
+    if zip_dataset_scope == "All US ZIP centroids":
+        st.caption(f"Using full US ZIP centroid dataset: {len(zip_geo):,} ZIPs loaded.")
+    else:
+        st.caption(f"Using project ZIP dataset: {len(zip_geo):,} ZIPs loaded.")
+    logger.info("zip_dataset_loaded scope=%s count=%d", zip_dataset_scope, len(zip_geo))
 
 chapter_circles = circles_from_sidebar(selected_chapters)
-
-if "drawn_features" not in st.session_state:
-    st.session_state["drawn_features"] = []
-
 all_circles = chapter_circles.copy()
-for feature in st.session_state["drawn_features"]:
-    parsed = circle_from_drawn_polygon(feature)
-    if parsed is not None:
-        all_circles.append(parsed)
 
 zip_geo_with_coverage = pd.DataFrame()
 if not zip_geo.empty:
-    covered = []
-    for row in zip_geo.itertuples(index=False):
-        is_covered = any(
-            haversine_miles(row.latitude, row.longitude, c["lat"], c["lon"]) <= c["radius_miles"]
-            for c in all_circles
-        )
-        covered.append(is_covered)
     zip_geo_with_coverage = zip_geo.copy()
-    zip_geo_with_coverage["covered"] = covered
-
-m = folium.Map(location=[39.7, -98.5], zoom_start=4, tiles="CartoDB positron")
-
-for c in chapter_circles:
-    folium.Circle(
-        location=[c["lat"], c["lon"]],
-        radius=c["radius_miles"] * 1609.34,
-        color="#2563eb",
-        weight=2,
-        fill=True,
-        fill_color="#60a5fa",
-        fill_opacity=0.16,
-        popup=f"{c['name']} ({c['radius_miles']:.0f} mi)",
-    ).add_to(m)
-    folium.Marker(
-        [c["lat"], c["lon"]],
-        tooltip=c["name"],
-        popup=f"{CHAPTERS[c['name']]['city']}<br>{c['radius_miles']:.0f} mi",
-    ).add_to(m)
-
-if not zip_geo_with_coverage.empty:
-    coverage_lookup = {
-        str(row["Zip Code"]).zfill(5): bool(row["covered"]) for _, row in zip_geo_with_coverage.iterrows()
-    }
-
-    if show_zip_polygons and zip_polygons:
-        polygons_to_draw = zip_polygons[:max_zip_points]
-        for feature in polygons_to_draw:
-            z = feature["properties"]["zip"]
-            covered_flag = coverage_lookup.get(z, False)
-            fill_color = "#16a34a" if covered_flag else "#dc2626"
-            border_color = "#14532d" if covered_flag else "#7f1d1d"
-
-            folium.GeoJson(
-                data=feature,
-                style_function=lambda _f, fc=fill_color, bc=border_color: {
-                    "fillColor": fc,
-                    "color": bc,
-                    "weight": 0.8,
-                    "fillOpacity": 0.35,
-                },
-                highlight_function=lambda _f: {
-                    "weight": 2.2,
-                    "fillOpacity": 0.55,
-                },
-                tooltip=f"ZIP {z} — {'Covered' if covered_flag else 'Not covered'}",
-            ).add_to(m)
+    zip_geo_with_coverage["Zip Code"] = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
+    if zip_dataset_scope == "All US ZIP centroids":
+        if "distance_index_ready" not in st.session_state:
+            st.session_state["distance_index_ready"] = False
+        if not st.session_state["distance_index_ready"]:
+            with st.spinner("Building ZIP coverage index… (first run only, cached to disk after)"):
+                _dm_all = precompute_all_us_zip_chapter_distances()
+            st.session_state["distance_index_ready"] = True
+        else:
+            _dm_all = precompute_all_us_zip_chapter_distances()
+        # align by zip code (safe after ensure_chapter_center_zips_present reindex)
+        distance_matrix = _dm_all.reindex(zip_geo_with_coverage["Zip Code"].values)
+        distance_matrix = distance_matrix.reset_index(drop=True)
+        distance_matrix.index = zip_geo_with_coverage.index
     else:
-        to_plot_main = zip_geo_with_coverage.rename(
-            columns={"Zip Code": "zip", "BSF Chapter": "chapter", "State": "state"}
-        ).head(max_zip_points)
-        for row in to_plot_main.itertuples(index=False):
-            color = "#16a34a" if row.covered else "#dc2626"
-            folium.CircleMarker(
-                location=[row.latitude, row.longitude],
-                radius=3,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.85,
-                popup=f"ZIP {row.zip}<br>{row.chapter}<br>{'Covered' if row.covered else 'Not covered'}",
-            ).add_to(m)
+        distance_matrix = precompute_zip_chapter_distances(zip_geo_with_coverage)
+    covered = np.zeros(len(zip_geo_with_coverage), dtype=bool)
+    for c in all_circles:
+        chapter_name = c["name"]
+        if chapter_name in distance_matrix.columns:
+            covered |= distance_matrix[chapter_name].to_numpy(dtype=float) <= float(c["radius_miles"])
+    zip_geo_with_coverage["covered"] = covered
+    zip_geo_with_coverage["is_center_zip"] = zip_geo_with_coverage["Zip Code"].isin(selected_center_zip_map)
+    zip_geo_with_coverage["center_chapter"] = zip_geo_with_coverage["Zip Code"].map(selected_center_zip_map).fillna("")
 
-draw = Draw(
-    export=False,
-    draw_options={
-        "polyline": False,
-        "rectangle": False,
-        "polygon": False,
-        "marker": False,
-        "circlemarker": False,
-        "circle": True,
-    },
-    edit_options={"edit": True, "remove": True},
+covered_total = int(zip_geo_with_coverage["covered"].sum()) if not zip_geo_with_coverage.empty else 0
+
+chapter_df = pd.DataFrame(chapter_circles)
+# Fixed CONUS center — keeps Hawaii from skewing the view
+center_lat, center_lon = 39.7, -98.5
+
+layers: list[pdk.Layer] = []
+
+if not chapter_df.empty:
+    chapter_df = chapter_df.copy()
+    chapter_df["radius_meters"] = chapter_df["radius_miles"] * 1609.34
+    chapter_df["fill_color"] = [[37, 99, 235, 45]] * len(chapter_df)
+    chapter_df["line_color"] = [[37, 99, 235, 235]] * len(chapter_df)
+    chapter_pickable = not performance_mode
+
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=chapter_df,
+            get_position="[lon, lat]",
+            get_radius="radius_meters",
+            get_fill_color="fill_color",
+            get_line_color="line_color",
+            stroked=True,
+            filled=True,
+            line_width_min_pixels=2,
+            radius_min_pixels=8,
+            pickable=chapter_pickable,
+        )
+    )
+    # Chapter name labels — visible when zoomed into a chapter area
+    layers.append(
+        pdk.Layer(
+            "TextLayer",
+            data=chapter_df,
+            get_position="[lon, lat]",
+            get_text="name",
+            get_color=[15, 23, 70, 230],
+            get_size=25000,
+            size_units="'meters'",
+            size_min_pixels=10,
+            size_max_pixels=20,
+            get_angle=0,
+            get_text_anchor="'middle'",
+            get_alignment_baseline="'center'",
+            pickable=False,
+        )
+    )
+
+# Render US Census ZIP polygons with coverage highlighting
+coverage_lookup = {}
+center_zip_lookup = {}
+center_chapter_lookup = {}
+zip_polygons: list[dict] = []
+missing_covered_zips: list[str] = []
+if not zip_geo_with_coverage.empty:
+    _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
+    coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
+    center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
+    center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
+    
+    # Separate covered and uncovered ZIPs
+    covered_zips = tuple(zip_geo_with_coverage[zip_geo_with_coverage["covered"]]["Zip Code"].astype(str).str.zfill(5).tolist())
+    uncovered_zips = tuple(zip_geo_with_coverage[~zip_geo_with_coverage["covered"]]["Zip Code"].astype(str).str.zfill(5).tolist())
+    
+    st.session_state["covered_zips_all"] = covered_zips
+
+    if st.session_state.get("load_covered_requested", False) and covered_zips:
+        covered_batch = covered_zips if render_all_covered else covered_zips[:covered_render_limit]
+        with st.spinner(f"Loading {len(covered_batch)} covered ZIP boundaries..."):
+            try:
+                polygon_map = load_cached_polygons_for_zips(covered_batch, point_stride=polygon_stride)
+                zip_polygons.extend([polygon_map[z] for z in covered_batch if z in polygon_map])
+                missing_covered_zips = [z for z in covered_batch if z not in polygon_map]
+            except Exception as ex:
+                st.warning(f"Covered ZIP boundaries could not load: {ex}")
+
+    if st.session_state.get("load_uncovered_requested", False) and uncovered_zips:
+        with st.spinner(f"Loading {len(uncovered_zips)} uncovered ZIP boundaries..."):
+            try:
+                polygon_map = load_cached_polygons_for_zips(uncovered_zips, point_stride=polygon_stride)
+                zip_polygons.extend([polygon_map[z] for z in uncovered_zips if z in polygon_map])
+            except Exception as ex:
+                st.warning(f"Uncovered ZIP boundaries could not load: {ex}")
+# Render ZIP polygons with coverage highlighting
+if zip_polygons:
+    polygon_features = []
+    for feature in zip_polygons:
+        z = feature["properties"]["zip"]
+        covered_flag = coverage_lookup.get(z, False)
+        center_zip_flag = center_zip_lookup.get(z, False)
+        fill_color = [255, 220, 0, 180] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
+        line_color = [200, 170, 0, 255] if center_zip_flag else ([22, 101, 52, 210] if covered_flag else [127, 29, 29, 210])
+        polygon_features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    **feature.get("properties", {}),
+                    "covered": covered_flag,
+                    "is_center_zip": center_zip_flag,
+                    "center_chapter": center_chapter_lookup.get(z, ""),
+                    "fill_color": fill_color,
+                    "line_color": line_color,
+                },
+                "geometry": feature["geometry"],
+            },
+        )
+
+    layers.append(
+        pdk.Layer(
+            "GeoJsonLayer",
+            data={"type": "FeatureCollection", "features": polygon_features},
+            stroked=True,
+            filled=True,
+            get_fill_color="properties.fill_color",
+            get_line_color="properties.line_color",
+            line_width_min_pixels=1,
+            pickable=not performance_mode,
+        )
+    )
+
+# ZIP code label layer — show ZIP number at each covered centroid
+zip_labels_rendered = 0
+if show_zip_labels and not zip_geo_with_coverage.empty:
+    label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
+    if not label_points.empty:
+        if "longitude" in label_points.columns and "latitude" in label_points.columns:
+            label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
+        label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
+        label_points["text_color"] = label_points["is_center_zip"].map(
+            lambda is_center: [255, 220, 0, 255] if bool(is_center) else [30, 30, 30, 220]
+        )
+        zip_labels_rendered = len(label_points)
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=label_points,
+                get_position="[lon, lat]",
+                get_text="label",
+                get_color="text_color",
+                get_size=600,
+                size_units="'meters'",
+                size_min_pixels=0,
+                size_max_pixels=5,
+                get_angle=0,
+                get_text_anchor="'middle'",
+                get_alignment_baseline="'center'",
+                pickable=False,
+            )
+        )
+
+_total_zips = int(len(zip_geo_with_coverage)) if not zip_geo_with_coverage.empty else 0
+_cov_pct = f"{100 * covered_total / _total_zips:.1f}%" if _total_zips > 0 else "N/A"
+logger.info(
+    "coverage_stats chapters=%d total_zips=%d covered=%d rendered_polygons=%d labels=%d",
+    len(selected_chapters),
+    _total_zips,
+    covered_total,
+    len(zip_polygons),
+    zip_labels_rendered,
 )
-draw.add_to(m)
+status_c1, status_c2, status_c3, status_c4, status_c5 = st.columns(5)
+status_c1.metric("Chapters", len(selected_chapters))
+status_c2.metric("Covered ZIPs", f"{covered_total:,}")
+status_c3.metric("Coverage", _cov_pct)
+status_c4.metric("Boundaries shown", len(zip_polygons))
+status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-map_state = st_folium(
-    m,
-    height=620,
-    width=None,
-    returned_objects=["all_drawings"],
-    key="coverage_map",
+tooltip_html = "<b>Chapter:</b> {name}<br/><b>Radius:</b> {radius_miles} mi"
+if not performance_mode:
+    tooltip_html += "<br/><b>ZIP:</b> {zip}<br/><b>Covered:</b> {covered}<br/><b>Center ZIP for:</b> {center_chapter}"
+
+deck = pdk.Deck(
+    layers=layers,
+    initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=3.6, pitch=0),
+    tooltip=None if performance_mode else {"html": tooltip_html, "style": {"backgroundColor": "#111827", "color": "white"}},
+    map_provider="carto",
+    map_style="light",
 )
 
-new_drawings = map_state.get("all_drawings") or []
-if new_drawings != st.session_state["drawn_features"]:
-    st.session_state["drawn_features"] = new_drawings
-    st.rerun()
+map_tab, details_tab = st.tabs(["Map", "Details"])
+
+with map_tab:
+    st.pydeck_chart(deck, width="stretch", height=680)
 
 if not zip_geo_with_coverage.empty:
+    with details_tab:
+        with st.expander("ZIP coverage details", expanded=not performance_mode):
+            c1, c2, c3 = st.columns(3)
+            covered_count = int(zip_geo_with_coverage["covered"].sum())
+            uncovered_count = int((~zip_geo_with_coverage["covered"]).sum())
+            c1.metric("Total ZIPs", int(len(zip_geo_with_coverage)))
+            c2.metric("Covered ZIPs", covered_count)
+            c3.metric("Uncovered ZIPs", uncovered_count)
 
-    with st.expander("ZIP coverage details", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total ZIPs", int(len(zip_geo_with_coverage)))
-        c2.metric("Covered ZIPs", int(zip_geo_with_coverage["covered"].sum()))
-        c3.metric("Uncovered ZIPs", int((~zip_geo_with_coverage["covered"]).sum()))
+            if selected_chapters and not zip_geo_with_coverage.empty:
+                # Per-chapter stats
+                ch_stats_rows = []
+                center_zip_lookup_by_chapter = (
+                    selected_center_zip_df.set_index("Chapter")["Center Zip Code"].to_dict()
+                    if not selected_center_zip_df.empty else {}
+                )
+                for c in chapter_circles:
+                    ch_name = c["name"]
+                    if ch_name in distance_matrix.columns:
+                        ch_mask = distance_matrix[ch_name].to_numpy(dtype=float) <= float(c["radius_miles"])
+                        ch_covered = int(ch_mask.sum())
+                    else:
+                        ch_covered = 0
+                    ch_stats_rows.append({
+                        "Chapter": ch_name,
+                        "City": CHAPTERS[ch_name]["city"],
+                        "Radius (mi)": c["radius_miles"],
+                        "Covered ZIPs": ch_covered,
+                        "Centroid ZIP": center_zip_lookup_by_chapter.get(ch_name, ""),
+                    })
+                ch_stats_df = pd.DataFrame(ch_stats_rows)
+                st.write("**Chapter coverage summary**")
+                st.dataframe(ch_stats_df, width="stretch", hide_index=True)
 
-        sample = zip_geo_with_coverage[["Zip Code", "BSF Chapter", "State", "covered"]].copy()
-        sample["covered"] = sample["covered"].map({True: "✅ Covered", False: "❌ Not covered"})
-        st.dataframe(sample.head(500), use_container_width=True)
+            loaded_covered = len(st.session_state.get("covered_zips_all") or []) if (st.session_state.get("load_covered_requested", False) and render_all_covered) else (min(covered_render_limit, len(st.session_state.get("covered_zips_all") or [])) if st.session_state.get("load_covered_requested", False) else 0)
+            total_covered = len(st.session_state.get("covered_zips_all") or [])
+            if not st.session_state.get("load_covered_requested", False):
+                st.write("Map showing circles only for instant load. Click **Load covered ZIPs** in the sidebar.")
+            elif total_covered > loaded_covered > 0:
+                st.write(f"Map showing **{loaded_covered} of {total_covered}** covered ZIP boundaries.")
+            elif total_covered > 0:
+                st.write(f"Map showing **{loaded_covered}** covered ZIP boundaries.")
 
-    st.caption(
-        f"Live map is showing first {min(max_zip_points, len(zip_geo_with_coverage)):,} ZIP polygons "
-        "(green = covered, red = not covered)."
-    )
+            if uncovered_count > 0 and not st.session_state.get("load_uncovered_requested", False):
+                if st.button(f"Load uncovered ZIPs ({uncovered_count}) on map"):
+                    st.session_state["load_uncovered_requested"] = True
+                    st.rerun()
+            elif st.session_state.get("load_uncovered_requested", False):
+                st.write("Map includes uncovered boundaries.")
+
+            show_zip_table = st.checkbox("Show ZIP details table", value=False)
+            if show_zip_table:
+                table_mode = st.radio(
+                    "ZIP table mode",
+                    options=["Covered only", "Covered + Uncovered"],
+                    horizontal=True,
+                    index=0,
+                )
+                table_rows = st.slider("ZIP rows in table", min_value=100, max_value=1000, value=250, step=50)
+                sample = zip_geo_with_coverage[["Zip Code", "BSF Chapter", "State", "covered"]].copy()
+                if table_mode == "Covered only":
+                    sample = sample[sample["covered"]]
+                sample["covered"] = sample["covered"].map({True: "✅ Covered", False: "❌ Not covered"})
+                st.dataframe(sample.head(table_rows), width="stretch")
+
+            covered_export = zip_geo_with_coverage[zip_geo_with_coverage["covered"]][["Zip Code", "BSF Chapter", "State"]].copy()
+            st.download_button(
+                "Download covered ZIP CSV",
+                data=covered_export.to_csv(index=False),
+                file_name="covered_zips.csv",
+                mime="text/csv",
+            )
+
+        st.caption(
+            f"Live map is showing {len(zip_polygons):,} US Census ZIP boundaries with real-time coverage highlighting."
+        )

@@ -1,0 +1,25 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, Segoe UI, Arial, sans-serif; color: #111827; }
+#app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+#sidebar { padding: 16px; overflow-y: auto; border-right: 1px solid #e5e7eb; background: #fafafa; }
+#map { width: 100%; height: 100%; }
+h1 { margin: 0 0 8px 0; font-size: 28px; }
+.muted { color: #6b7280; margin: 0 0 16px 0; }
+label { display: block; margin: 12px 0 6px 0; font-weight: 600; }
+select, input[type="range"], button { width: 100%; }
+.chapter { margin: 10px 0; padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.chapter-title { font-weight: 600; margin-bottom: 6px; }
+.chapter-head { display: flex; align-items: center; gap: 8px; margin: 0; }
+.chapter-subtitle { color: #6b7280; font-size: 12px; margin-bottom: 6px; }
+.value { color: #2563eb; margin-top: 4px; font-weight: 600; }
+.buttons { margin-top: 12px; display: grid; gap: 8px; }
+button { padding: 10px; border: none; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; font-weight: 600; }
+button:last-child { background: #374151; }
+.inline-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.secondary-btn { background: #111827; font-size: 12px; padding: 8px; }
+.small { font-size: 12px; }
+#stats { margin-top: 14px; font-size: 14px; line-height: 1.5; }
+@media (max-width: 1000px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 48vh 52vh; }
+  #sidebar { border-right: none; border-bottom: 1px solid #e5e7eb; }
+}

@@ -10,6 +10,14 @@ venv/
 # Downloaded large GIS artifacts (re-generated at runtime)
 data/
 
+# Environment / secrets
+.env
+*.env
+
+# Logs
+logs/
+*.log
+
 # OS files
 .DS_Store
 Thumbs.db
