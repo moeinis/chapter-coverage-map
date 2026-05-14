@@ -675,9 +675,11 @@ zip_polygons: list[dict] = []
 covered_zips: tuple[str, ...] = ()
 if not zip_geo_with_coverage.empty:
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
+    center_zips = tuple(selected_center_zip_keys)
+    render_zips = tuple(dict.fromkeys([*covered_zips, *center_zips]))
     st.session_state["inside_zips_all"] = covered_zips
 
-    if covered_zips:
+    if render_zips:
         # Cache lookup dicts in session state — rebuilt only when covered set changes.
         _lookup_key = (coverage_signature, selected_center_zip_keys)
         if st.session_state.get("_lookup_cache_key") != _lookup_key:
@@ -690,17 +692,20 @@ if not zip_geo_with_coverage.empty:
         center_zip_lookup = st.session_state["_center_zip_lookup"]
         center_chapter_lookup = st.session_state["_center_chapter_lookup"]
 
-        _poly_need_load = st.session_state.get("_poly_load_key") != (coverage_signature, polygon_stride)
+        _poly_need_load = st.session_state.get("_poly_load_key") != (coverage_signature, polygon_stride, render_zips)
         if _poly_need_load:
-            with st.spinner(f"Loading {len(covered_zips):,} ZIP boundaries inside circles..."):
+            with st.spinner(f"Loading {len(render_zips):,} ZIP boundaries (covered + center ZIPs)..."):
                 try:
-                    polygon_map = load_cached_polygons_for_zips(covered_zips, point_stride=polygon_stride)
-                    st.session_state["_zip_polygons"] = [polygon_map[z] for z in covered_zips if z in polygon_map]
-                    st.session_state["_poly_load_key"] = (coverage_signature, polygon_stride)
+                    polygon_map = load_cached_polygons_for_zips(render_zips, point_stride=polygon_stride)
+                    st.session_state["_zip_polygons"] = [polygon_map[z] for z in render_zips if z in polygon_map]
+                    st.session_state["_poly_load_key"] = (coverage_signature, polygon_stride, render_zips)
                 except Exception as ex:
                     st.warning(f"ZIP boundaries could not load: {ex}")
                     st.session_state["_zip_polygons"] = []
         zip_polygons = st.session_state.get("_zip_polygons", [])
+    else:
+        st.session_state["_zip_polygons"] = []
+        zip_polygons = []
 # Render ZIP polygons with coverage highlighting
 # Cache assembled polygon_features in session state — skip rebuild if inputs unchanged.
 _pfeat_key = (coverage_signature, polygon_stride, selected_center_zip_keys)
