@@ -461,7 +461,7 @@ with st.sidebar:
     )
     show_zip_numbers = st.checkbox(
         "Show ZIP code labels",
-        value=True,
+        value=False,
         help="Turn ZIP number labels on or off.",
     )
     zip_label_size = st.slider(
@@ -672,16 +672,17 @@ if zip_polygons:
         polygon_features.append(
             {
                 "type": "Feature",
-                "hover_title": z,
-                "hover_type": "Center ZIP" if center_zip_flag else ("Covered ZIP" if covered_flag else "ZIP"),
-                "hover_detail": center_chapter_lookup.get(z, "Inside selected chapter radius") if center_zip_flag else ("Inside selected chapter radius" if covered_flag else "ZIP boundary"),
                 "properties": {
                     **feature.get("properties", {}),
+                    "zip": z,
                     "covered": covered_flag,
                     "is_center_zip": center_zip_flag,
                     "center_chapter": center_chapter_lookup.get(z, ""),
                     "fill_color": fill_color,
                     "line_color": line_color,
+                    "hover_title": z,
+                    "hover_type": "Center ZIP" if center_zip_flag else ("Covered ZIP" if covered_flag else "ZIP"),
+                    "hover_detail": center_chapter_lookup.get(z, "Inside selected chapter radius") if center_zip_flag else ("Inside selected chapter radius" if covered_flag else "ZIP boundary"),
                 },
                 "geometry": feature["geometry"],
             },
@@ -703,19 +704,62 @@ if zip_polygons:
         )
     )
 
-# ZIP code label layer — auto-on with safe defaults (no sidebar controls).
+# ZIP code label layers.
 zip_labels_rendered = 0
 zip_label_style = compute_zip_label_style(map_zoom, size_scale=zip_label_size)
+# Always show center ZIPs so the main chapter anchors are visible.
+if not zip_geo_with_coverage.empty:
+    center_label_points = zip_geo_with_coverage[zip_geo_with_coverage["is_center_zip"]].copy()
+    if not center_label_points.empty:
+        if "longitude" in center_label_points.columns and "latitude" in center_label_points.columns:
+            center_label_points = center_label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
+        center_label_points["label"] = center_label_points["Zip Code"].astype(str).str.zfill(5)
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=center_label_points,
+                get_position="[lon, lat]",
+                get_text="label",
+                get_color=[20, 20, 20, 245],
+                get_size=max(900, zip_label_style["size_meters"] * 1.2),
+                size_units="'meters'",
+                size_min_pixels=max(8, zip_label_style["min_pixels"] + 2),
+                size_max_pixels=max(14, zip_label_style["max_pixels"] + 2),
+                min_zoom=4.5,
+                get_angle=0,
+                get_text_anchor="'middle'",
+                get_alignment_baseline="'center'",
+                pickable=False,
+            )
+        )
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=center_label_points,
+                get_position="[lon, lat]",
+                get_text="label",
+                get_color=[255, 220, 0, 255],
+                get_size=max(760, zip_label_style["size_meters"]),
+                size_units="'meters'",
+                size_min_pixels=max(6, zip_label_style["min_pixels"] + 1),
+                size_max_pixels=max(12, zip_label_style["max_pixels"] + 1),
+                min_zoom=4.5,
+                get_angle=0,
+                get_text_anchor="'middle'",
+                get_alignment_baseline="'center'",
+                pickable=False,
+            )
+        )
+        zip_labels_rendered += len(center_label_points)
+
 if show_zip_numbers and not zip_geo_with_coverage.empty:
-    label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
+    label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"] & ~zip_geo_with_coverage["is_center_zip"]].copy()
     if not label_points.empty:
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
             label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
         label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
-        label_points["text_color"] = label_points["is_center_zip"].map(
-            lambda is_center: [255, 220, 0, 255] if bool(is_center) else [35, 35, 35, 235]
-        )
-        zip_labels_rendered = len(label_points)
+        label_points["text_color"] = [35, 35, 35, 220]
+        zip_labels_rendered += len(label_points)
         layers.append(
             pdk.Layer(
                 "TextLayer",
@@ -752,7 +796,7 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-tooltip_html = "<b>{hover_title}</b><br/><b>Type:</b> {hover_type}<br/>{hover_detail}"
+tooltip_html = "<b>{hover_title}{properties.hover_title}</b><br/><b>Type:</b> {hover_type}{properties.hover_type}<br/>{hover_detail}{properties.hover_detail}"
 
 deck = pdk.Deck(
     layers=layers,
