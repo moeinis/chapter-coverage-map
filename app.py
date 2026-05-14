@@ -448,6 +448,11 @@ with st.sidebar:
         help="Controls default map detail and payload size sent to the browser.",
     )
     performance_mode = view_mode == "Fast (recommended)"
+    ultra_fast_mode = st.checkbox(
+        "Ultra-fast circles-only mode",
+        value=performance_mode,
+        help="Skips ZIP coverage/polygon computation and renders chapter circles only.",
+    )
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
@@ -477,6 +482,7 @@ with st.sidebar:
         value=defaults["covered"],
         step=20,
         help="Hard-capped to keep browser payload below Streamlit message limits.",
+        disabled=ultra_fast_mode,
     )
     uncovered_render_limit = st.slider(
         "Uncovered ZIP boundaries to render",
@@ -485,11 +491,13 @@ with st.sidebar:
         value=defaults["uncovered"],
         step=20,
         help="Uncovered ZIPs are optional and capped for stability.",
+        disabled=ultra_fast_mode,
     )
     show_zip_labels = st.checkbox(
         "Show ZIP code labels",
         value=view_mode != "Fast (recommended)",
         help="Display ZIP code numbers on the map at each covered ZIP centroid.",
+        disabled=ultra_fast_mode,
     )
     zip_label_limit = st.slider(
         "Max ZIP labels",
@@ -498,6 +506,23 @@ with st.sidebar:
         value=defaults["labels"],
         step=100,
         help="Limits label payload to keep map responsive.",
+        disabled=ultra_fast_mode or not show_zip_labels,
+    )
+    label_min_zoom = st.slider(
+        "ZIP labels visible from zoom",
+        min_value=3.5,
+        max_value=8.0,
+        value=5.0,
+        step=0.1,
+        help="Zoom-aware labels: hide labels at low zoom to reduce clutter/render load.",
+        disabled=ultra_fast_mode or not show_zip_labels,
+    )
+    map_zoom = st.slider(
+        "Initial map zoom",
+        min_value=3.0,
+        max_value=7.0,
+        value=3.6,
+        step=0.1,
     )
     with st.expander("Advanced", expanded=False):
         default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
@@ -505,6 +530,7 @@ with st.sidebar:
             "ZIP boundary detail (lower=faster)",
             options=[1, 2, 3, 4, 5, 6],
             index=default_polygon_stride_index,
+            disabled=ultra_fast_mode,
         )
 
     if "load_covered_requested" not in st.session_state:
@@ -513,7 +539,7 @@ with st.sidebar:
         st.session_state["load_uncovered_requested"] = False
 
     c_a, c_b = st.columns(2)
-    if c_a.button("Load covered boundaries"):
+    if c_a.button("Load covered boundaries", disabled=ultra_fast_mode):
         st.session_state["load_covered_requested"] = True
         st.rerun()
     if c_b.button("Reset layers"):
@@ -522,21 +548,26 @@ with st.sidebar:
         st.rerun()
 
     st.info("Tip: Start in Fast mode, then switch to Balanced/Detailed for closer inspection.")
+    if ultra_fast_mode:
+        st.caption("Ultra-fast mode active: ZIP coverage, polygons, and ZIP labels are skipped for maximum responsiveness.")
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
     st.caption(f"Safety caps: polygons ≤ {MAX_RENDERED_POLYGONS}, labels ≤ {MAX_RENDERED_LABELS}")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
 
-if zip_dataset_scope == "Project ZIP table":
-    try:
-        _ = load_zip_table()
-    except FileNotFoundError as ex:
-        st.error(str(ex))
-        st.stop()
-    zip_geo = geocode_project_zip_centroids()
+if ultra_fast_mode:
+    zip_geo = pd.DataFrame()
 else:
-    zip_geo = load_all_us_zip_centroids()
+    if zip_dataset_scope == "Project ZIP table":
+        try:
+            _ = load_zip_table()
+        except FileNotFoundError as ex:
+            st.error(str(ex))
+            st.stop()
+        zip_geo = geocode_project_zip_centroids()
+    else:
+        zip_geo = load_all_us_zip_centroids()
 
-chapter_center_zip_df = compute_chapter_center_zips()
+chapter_center_zip_df = pd.DataFrame() if ultra_fast_mode else compute_chapter_center_zips()
 if not zip_geo.empty:
     zip_geo = ensure_chapter_center_zips_present(zip_geo)
 
@@ -630,6 +661,7 @@ if not chapter_df.empty:
             size_units="'meters'",
             size_min_pixels=10,
             size_max_pixels=20,
+            min_zoom=4,
             get_angle=0,
             get_text_anchor="'middle'",
             get_alignment_baseline="'center'",
@@ -743,6 +775,7 @@ if show_zip_labels and not zip_geo_with_coverage.empty:
                 size_units="'meters'",
                 size_min_pixels=0,
                 size_max_pixels=5,
+                min_zoom=label_min_zoom,
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
@@ -773,7 +806,7 @@ if not performance_mode:
 
 deck = pdk.Deck(
     layers=layers,
-    initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=3.6, pitch=0),
+    initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=map_zoom, pitch=0),
     tooltip=None if performance_mode else {"html": tooltip_html, "style": {"backgroundColor": "#111827", "color": "white"}},
     map_provider="carto",
     map_style="light",
@@ -783,6 +816,10 @@ map_tab, details_tab = st.tabs(["Map", "Details"])
 
 with map_tab:
     st.pydeck_chart(deck, width="stretch", height=680)
+
+if ultra_fast_mode:
+    with details_tab:
+        st.info("Ultra-fast mode is on. ZIP coverage calculations and polygon rendering are intentionally skipped for speed.")
 
 if not zip_geo_with_coverage.empty:
     with details_tab:
