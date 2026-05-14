@@ -432,12 +432,12 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
     return circles
 
 
-def compute_zip_label_style(current_zoom: float) -> dict[str, float]:
+def compute_zip_label_style(current_zoom: float, size_scale: float = 1.0) -> dict[str, float]:
     zoom_factor = max(0.0, float(current_zoom) - 3.0)
     return {
-        "size_meters": 450 + (zoom_factor * 170),
-        "min_pixels": 4 + int(round(zoom_factor * 1.5)),
-        "max_pixels": 9 + int(round(zoom_factor * 2.5)),
+        "size_meters": (450 + (zoom_factor * 170)) * size_scale,
+        "min_pixels": max(3, int(round((4 + (zoom_factor * 1.5)) * size_scale))),
+        "max_pixels": max(7, int(round((9 + (zoom_factor * 2.5)) * size_scale))),
         "min_zoom": max(3.0, min(DEFAULT_LABEL_MIN_ZOOM, float(current_zoom) - 0.2)),
     }
 
@@ -460,9 +460,18 @@ with st.sidebar:
         step=0.1,
     )
     show_zip_numbers = st.checkbox(
-        "Show ZIP code numbers",
+        "Show ZIP code labels",
         value=False,
         help="Turn ZIP number labels on or off.",
+    )
+    zip_label_size = st.slider(
+        "ZIP label size",
+        min_value=0.6,
+        max_value=1.8,
+        value=1.0,
+        step=0.1,
+        disabled=not show_zip_numbers,
+        help="Adjust ZIP label font size relative to the map zoom.",
     )
 
     show_chapter_radius_controls = st.checkbox(
@@ -683,7 +692,7 @@ if zip_polygons:
 
 # ZIP code label layer — auto-on with safe defaults (no sidebar controls).
 zip_labels_rendered = 0
-zip_label_style = compute_zip_label_style(map_zoom)
+zip_label_style = compute_zip_label_style(map_zoom, size_scale=zip_label_size)
 if show_zip_numbers and not zip_geo_with_coverage.empty:
     label_points = zip_geo_with_coverage[zip_geo_with_coverage["covered"]].copy()
     if not label_points.empty:
