@@ -48,7 +48,7 @@ st.markdown(
 
 st.markdown('<h1 class="main-header">📍 BSF Chapter Coverage Map</h1>', unsafe_allow_html=True)
 st.caption("ZIP boundaries inside circles auto-update as chapter radii change.")
-st.caption("Build: 2026-05-13-streamlit-polished")
+st.caption("Build: 2026-05-14-production")
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -450,7 +450,7 @@ with st.sidebar:
         default=list(CHAPTERS.keys()),
     )
 
-    defaults = {"stride": 4}
+    defaults = {"stride": 5}
 
     map_zoom = st.slider(
         "Initial map zoom",
@@ -500,7 +500,7 @@ with st.sidebar:
         )
         transparent_3d_fill = st.checkbox(
             "3D transparent ZIP fill",
-            value=True,
+            value=False,
             help="Adds subtle depth while keeping ZIP polygons transparent and easy to read.",
         )
         default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
@@ -547,6 +547,7 @@ elif not zip_geo.empty:
 chapter_circles = circles_from_sidebar(selected_chapters)
 all_circles = chapter_circles.copy()
 
+distance_matrix: pd.DataFrame = pd.DataFrame()
 zip_geo_with_coverage = pd.DataFrame()
 if not zip_geo.empty:
     zip_geo_with_coverage = zip_geo.copy()
@@ -630,57 +631,74 @@ if not chapter_df.empty:
     )
 
 # Render US Census ZIP polygons with coverage highlighting
-coverage_lookup = {}
-center_zip_lookup = {}
-center_chapter_lookup = {}
+coverage_lookup: dict[str, bool] = {}
+center_zip_lookup: dict[str, bool] = {}
+center_chapter_lookup: dict[str, str] = {}
 zip_polygons: list[dict] = []
 missing_covered_zips: list[str] = []
+covered_zips: tuple[str, ...] = ()
 if not zip_geo_with_coverage.empty:
-    # Separate covered ZIPs (always needed for counts/message).
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
     st.session_state["inside_zips_all"] = covered_zips
 
     if covered_zips:
-        if not coverage_lookup:
+        # Cache lookup dicts in session state — rebuilt only when covered set changes.
+        _lookup_key = (covered_zips, tuple(sorted(selected_center_zip_map.keys())))
+        if st.session_state.get("_lookup_cache_key") != _lookup_key:
             _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
-            coverage_lookup = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
-            center_zip_lookup = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
-            center_chapter_lookup = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
-        inside_batch = covered_zips
-        with st.spinner(f"Loading {len(inside_batch)} ZIP boundaries inside circles..."):
-            try:
-                polygon_map = load_cached_polygons_for_zips(inside_batch, point_stride=polygon_stride)
-                zip_polygons.extend([polygon_map[z] for z in inside_batch if z in polygon_map])
-                missing_covered_zips = [z for z in inside_batch if z not in polygon_map]
-            except Exception as ex:
-                st.warning(f"ZIP boundaries could not load: {ex}")
+            st.session_state["_coverage_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
+            st.session_state["_center_zip_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
+            st.session_state["_center_chapter_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
+            st.session_state["_lookup_cache_key"] = _lookup_key
+        coverage_lookup = st.session_state["_coverage_lookup"]
+        center_zip_lookup = st.session_state["_center_zip_lookup"]
+        center_chapter_lookup = st.session_state["_center_chapter_lookup"]
+
+        _poly_need_load = st.session_state.get("_poly_load_key") != (covered_zips, polygon_stride)
+        if _poly_need_load:
+            with st.spinner(f"Loading {len(covered_zips):,} ZIP boundaries inside circles..."):
+                try:
+                    polygon_map = load_cached_polygons_for_zips(covered_zips, point_stride=polygon_stride)
+                    st.session_state["_zip_polygons"] = [polygon_map[z] for z in covered_zips if z in polygon_map]
+                    st.session_state["_poly_load_key"] = (covered_zips, polygon_stride)
+                except Exception as ex:
+                    st.warning(f"ZIP boundaries could not load: {ex}")
+                    st.session_state["_zip_polygons"] = []
+        zip_polygons = st.session_state.get("_zip_polygons", [])
 # Render ZIP polygons with coverage highlighting
-if zip_polygons:
-    polygon_features = []
+# Cache assembled polygon_features in session state — skip rebuild if inputs unchanged.
+_pfeat_key = (covered_zips, polygon_stride, tuple(sorted(selected_center_zip_map.keys())))
+if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
+    _polygon_features: list[dict] = []
     for feature in zip_polygons:
         z = feature["properties"]["zip"]
         covered_flag = coverage_lookup.get(z, False)
         center_zip_flag = center_zip_lookup.get(z, False)
-        fill_color = [255, 220, 0, 180] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
-        line_color = [15, 15, 15, 210]
-        polygon_features.append(
+        fill_color = [255, 215, 0, 255] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
+        line_color = [0, 0, 0, 255] if center_zip_flag else [15, 15, 15, 210]
+        _polygon_features.append(
             {
                 "type": "Feature",
                 "properties": {
-                    **feature.get("properties", {}),
                     "zip": z,
-                    "covered": covered_flag,
-                    "is_center_zip": center_zip_flag,
-                    "center_chapter": center_chapter_lookup.get(z, ""),
                     "fill_color": fill_color,
                     "line_color": line_color,
-                    "hover_title": z,
-                    "hover_type": "Center ZIP" if center_zip_flag else ("Covered ZIP" if covered_flag else "ZIP"),
-                    "hover_detail": center_chapter_lookup.get(z, "Inside selected chapter radius") if center_zip_flag else ("Inside selected chapter radius" if covered_flag else "ZIP boundary"),
+                    "hover_title": f"ZIP {z}",
+                    "hover_type": "Center ZIP" if center_zip_flag else "Covered ZIP",
+                    "hover_detail": (
+                        f"Center ZIP for: {center_chapter_lookup.get(z, '')}"
+                        if center_zip_flag
+                        else "Inside selected chapter radius"
+                    ),
                 },
                 "geometry": feature["geometry"],
             },
         )
+    st.session_state["_polygon_features"] = _polygon_features
+    st.session_state["_pfeat_cache_key"] = _pfeat_key
+
+polygon_features: list[dict] = st.session_state.get("_polygon_features", []) if zip_polygons else []
+if polygon_features:
 
     layers.append(
         pdk.Layer(
@@ -695,6 +713,8 @@ if zip_polygons:
             wireframe=transparent_3d_fill,
             get_elevation=100,
             pickable=True,
+            auto_highlight=True,
+            highlight_color=[59, 130, 246, 180],
         )
     )
 
@@ -790,7 +810,7 @@ status_c3.metric("Coverage", _cov_pct)
 status_c4.metric("Boundaries shown", len(zip_polygons))
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
-tooltip_html = "<b>{name}{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
+tooltip_html = "<b>{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
 
 deck = pdk.Deck(
     layers=layers,
