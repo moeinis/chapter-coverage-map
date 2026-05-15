@@ -509,16 +509,25 @@ with st.sidebar:
         help="Hidden by default to keep the UI clean.",
     )
     if show_chapter_radius_controls:
-        for chapter in selected_chapters:
-            default_radius = CHAPTERS[chapter]["radius_miles"]
-            st.slider(
-                f"{chapter} radius (mi)",
-                min_value=10,
-                max_value=250,
-                value=default_radius,
-                step=5,
-                key=f"radius_{chapter}",
-            )
+        st.caption("Adjust sliders, then click **Apply radius changes** for a single fast refresh.")
+        with st.form("radius_controls_form", clear_on_submit=False):
+            radius_updates: dict[str, int] = {}
+            for chapter in selected_chapters:
+                default_radius = int(st.session_state.get(f"radius_{chapter}", CHAPTERS[chapter]["radius_miles"]))
+                radius_updates[chapter] = st.slider(
+                    f"{chapter} radius (mi)",
+                    min_value=10,
+                    max_value=250,
+                    value=default_radius,
+                    step=5,
+                    key=f"radius_form_{chapter}",
+                )
+            apply_radius_changes = st.form_submit_button("Apply radius changes", use_container_width=True)
+
+        if apply_radius_changes:
+            for chapter, radius in radius_updates.items():
+                st.session_state[f"radius_{chapter}"] = int(radius)
+            st.rerun()
 
     with st.expander("Advanced settings", expanded=False):
         minimal_basemap = st.checkbox(
