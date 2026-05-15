@@ -529,8 +529,8 @@ with st.sidebar:
         zip_dataset_scope = st.selectbox(
             "ZIP dataset scope",
             options=["Project ZIP table", "All US ZIP centroids"],
-            index=1,
-            help="Use full US ZIP centroids for whole-US visibility, or project ZIP table for chapter-linked ZIPs only.",
+            index=0,
+            help="Project ZIP table is faster; switch to full US ZIP centroids only when you need nationwide coverage.",
         )
         transparent_3d_fill = st.checkbox(
             "3D transparent ZIP fill",
