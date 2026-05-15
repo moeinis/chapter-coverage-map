@@ -521,6 +521,11 @@ with st.sidebar:
             )
 
     with st.expander("Advanced settings", expanded=False):
+        minimal_basemap = st.checkbox(
+            "Minimal base map",
+            value=True,
+            help="Faster initial load by skipping external map tiles.",
+        )
         zip_dataset_scope = st.selectbox(
             "ZIP dataset scope",
             options=["Project ZIP table", "All US ZIP centroids"],
@@ -895,12 +900,15 @@ status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
 
 tooltip_html = "<b>{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
 
+deck_map_provider = None if minimal_basemap else "carto"
+deck_map_style = None if minimal_basemap else "light"
+
 deck = pdk.Deck(
     layers=layers,
     initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=map_zoom, pitch=0),
     tooltip={"html": tooltip_html, "style": {"backgroundColor": "#111827", "color": "white"}},
-    map_provider="carto",
-    map_style="light",
+    map_provider=deck_map_provider,
+    map_style=deck_map_style,
 )
 
 map_tab, details_tab = st.tabs(["Map", "Details"])
