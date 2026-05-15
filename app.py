@@ -90,6 +90,7 @@ DEFAULT_ZIP_TABLE_PATHS = [
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
 DEFAULT_LABEL_MIN_ZOOM = 5.0
+PERSIST_POLYGON_CACHE_TO_DISK = os.getenv("PERSIST_POLYGON_CACHE_TO_DISK", "0").strip() == "1"
 
 # Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
 POLYGON_CACHE_BY_STRIDE: dict[int, dict[str, dict]] = {}
@@ -339,8 +340,7 @@ def ensure_chapter_center_zips_present(zip_geo_df: pd.DataFrame) -> pd.DataFrame
 
 
 def load_zip_polygons_map(zip_codes: tuple[str, ...], point_stride: int = 3) -> dict[str, dict]:
-    shp_path = ensure_zcta_files()
-    reader = shapefile.Reader(shp_path)
+    reader = get_zcta_reader()
     zcta_index_map = load_zcta_record_index()
     features_by_zip: dict[str, dict] = {}
 
@@ -384,9 +384,14 @@ def load_zip_polygons_map(zip_codes: tuple[str, ...], point_stride: int = 3) -> 
 
 
 @st.cache_resource(show_spinner=False)
-def load_zcta_record_index() -> dict[str, int]:
+def get_zcta_reader() -> shapefile.Reader:
     shp_path = ensure_zcta_files()
-    reader = shapefile.Reader(shp_path)
+    return shapefile.Reader(shp_path)
+
+
+@st.cache_resource(show_spinner=False)
+def load_zcta_record_index() -> dict[str, int]:
+    reader = get_zcta_reader()
     fields = [f[0] for f in reader.fields[1:]]
     if "ZCTA5CE20" not in fields:
         return {}
@@ -427,14 +432,15 @@ def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int 
     if missing:
         fetched = load_zip_polygons_map(missing, point_stride=point_stride)
         cached_map.update(fetched)
-        try:
-            feature_collection = {
-                "type": "FeatureCollection",
-                "features": list(cached_map.values()),
-            }
-            cache_path.write_text(json.dumps(feature_collection), encoding="utf-8")
-        except Exception:
-            pass
+        if PERSIST_POLYGON_CACHE_TO_DISK:
+            try:
+                feature_collection = {
+                    "type": "FeatureCollection",
+                    "features": list(cached_map.values()),
+                }
+                cache_path.write_text(json.dumps(feature_collection), encoding="utf-8")
+            except Exception:
+                pass
 
     return {z: cached_map[z] for z in requested if z in cached_map}
 
@@ -692,17 +698,21 @@ if not zip_geo_with_coverage.empty:
         center_zip_lookup = st.session_state["_center_zip_lookup"]
         center_chapter_lookup = st.session_state["_center_chapter_lookup"]
 
-        _poly_need_load = st.session_state.get("_poly_load_key") != (coverage_signature, polygon_stride, render_zips)
-        if _poly_need_load:
-            with st.spinner(f"Loading {len(render_zips):,} ZIP boundaries (covered + center ZIPs)..."):
+        map_key = f"_zip_polygon_map_stride_{polygon_stride}"
+        polygon_map_for_stride: dict[str, dict] = st.session_state.get(map_key, {})
+        missing_render_zips = tuple(z for z in render_zips if z not in polygon_map_for_stride)
+
+        if missing_render_zips:
+            with st.spinner(f"Loading {len(missing_render_zips):,} new ZIP boundaries..."):
                 try:
-                    polygon_map = load_cached_polygons_for_zips(render_zips, point_stride=polygon_stride)
-                    st.session_state["_zip_polygons"] = [polygon_map[z] for z in render_zips if z in polygon_map]
-                    st.session_state["_poly_load_key"] = (coverage_signature, polygon_stride, render_zips)
+                    fetched_missing = load_cached_polygons_for_zips(missing_render_zips, point_stride=polygon_stride)
+                    polygon_map_for_stride.update(fetched_missing)
+                    st.session_state[map_key] = polygon_map_for_stride
                 except Exception as ex:
                     st.warning(f"ZIP boundaries could not load: {ex}")
-                    st.session_state["_zip_polygons"] = []
-        zip_polygons = st.session_state.get("_zip_polygons", [])
+
+        zip_polygons = [polygon_map_for_stride[z] for z in render_zips if z in polygon_map_for_stride]
+        st.session_state["_zip_polygons"] = zip_polygons
     else:
         st.session_state["_zip_polygons"] = []
         zip_polygons = []
@@ -711,37 +721,47 @@ if not zip_geo_with_coverage.empty:
 _pfeat_key = (coverage_signature, polygon_stride, selected_center_zip_keys)
 if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
     _polygon_features: list[dict] = []
+    _center_polygon_features: list[dict] = []
+    _non_center_polygon_features: list[dict] = []
     for feature in zip_polygons:
         z = feature["properties"]["zip"]
         covered_flag = coverage_lookup.get(z, False)
         center_zip_flag = center_zip_lookup.get(z, False)
         fill_color = [255, 215, 0, 255] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
         line_color = [0, 0, 0, 255] if center_zip_flag else [15, 15, 15, 210]
-        _polygon_features.append(
-            {
-                "type": "Feature",
-                "properties": {
-                    "zip": z,
-                    "fill_color": fill_color,
-                    "line_color": line_color,
-                    "hover_title": f"ZIP {z}",
-                    "hover_type": "Center ZIP" if center_zip_flag else "Covered ZIP",
-                    "hover_detail": (
-                        f"Center ZIP for: {center_chapter_lookup.get(z, '')}"
-                        if center_zip_flag
-                        else "Inside selected chapter radius"
-                    ),
-                },
-                "geometry": feature["geometry"],
+        _feature = {
+            "type": "Feature",
+            "properties": {
+                "zip": z,
+                "fill_color": fill_color,
+                "line_color": line_color,
+                "hover_title": f"ZIP {z}",
+                "hover_type": "Center ZIP" if center_zip_flag else "Covered ZIP",
+                "hover_detail": (
+                    f"Center ZIP for: {center_chapter_lookup.get(z, '')}"
+                    if center_zip_flag
+                    else "Inside selected chapter radius"
+                ),
             },
-        )
+            "geometry": feature["geometry"],
+        }
+        _polygon_features.append(_feature)
+        if center_zip_flag:
+            _center_polygon_features.append(_feature)
+        else:
+            _non_center_polygon_features.append(_feature)
     st.session_state["_polygon_features"] = _polygon_features
+    st.session_state["_center_polygon_features"] = _center_polygon_features
+    st.session_state["_non_center_polygon_features"] = _non_center_polygon_features
     st.session_state["_pfeat_cache_key"] = _pfeat_key
 
 polygon_features: list[dict] = st.session_state.get("_polygon_features", []) if zip_polygons else []
 if polygon_features:
-    center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") == "Center ZIP"]
-    non_center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") != "Center ZIP"]
+    center_polygon_features = st.session_state.get("_center_polygon_features")
+    non_center_polygon_features = st.session_state.get("_non_center_polygon_features")
+    if center_polygon_features is None or non_center_polygon_features is None:
+        center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") == "Center ZIP"]
+        non_center_polygon_features = [f for f in polygon_features if f.get("properties", {}).get("hover_type") != "Center ZIP"]
 
     if non_center_polygon_features:
         layers.append(
