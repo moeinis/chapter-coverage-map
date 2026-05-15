@@ -89,7 +89,7 @@ DEFAULT_ZIP_TABLE_PATHS = [
     BASE_DIR / "data" / "Chapters_2020_zip codes.csv",
     Path("c:/Users/moein/Downloads/Chapters_2020_zip codes.csv"),
 ]
-DEFAULT_LABEL_MIN_ZOOM = 5.0
+DEFAULT_LABEL_MIN_ZOOM = 3.4
 PERSIST_POLYGON_CACHE_TO_DISK = os.getenv("PERSIST_POLYGON_CACHE_TO_DISK", "0").strip() == "1"
 
 # Process-level polygon cache to avoid repeatedly reading large GeoJSON files each rerun.
@@ -490,14 +490,14 @@ with st.sidebar:
     )
     show_zip_numbers = st.checkbox(
         "Show ZIP code labels",
-        value=False,
+        value=True,
         help="Turn ZIP number labels on or off.",
     )
     zip_label_size = st.slider(
         "ZIP label size",
         min_value=0.6,
         max_value=1.8,
-        value=0.8,
+        value=1.0,
         step=0.1,
         disabled=not show_zip_numbers,
         help="Adjust ZIP label font size relative to the map zoom.",
@@ -693,6 +693,7 @@ center_zip_lookup: dict[str, bool] = {}
 center_chapter_lookup: dict[str, str] = {}
 zip_polygons: list[dict] = []
 covered_zips: tuple[str, ...] = ()
+missing_polygon_zips: tuple[str, ...] = ()
 if not zip_geo_with_coverage.empty:
     covered_zips = tuple(zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist())
     center_zips = tuple(selected_center_zip_keys)
@@ -726,6 +727,8 @@ if not zip_geo_with_coverage.empty:
                     st.warning(f"ZIP boundaries could not load: {ex}")
 
         zip_polygons = [polygon_map_for_stride[z] for z in render_zips if z in polygon_map_for_stride]
+        rendered_zip_codes = {str(f.get("properties", {}).get("zip", "")).zfill(5) for f in zip_polygons}
+        missing_polygon_zips = tuple(z for z in covered_zips if z not in rendered_zip_codes)
         st.session_state["_zip_polygons"] = zip_polygons
     else:
         st.session_state["_zip_polygons"] = []
@@ -741,7 +744,7 @@ if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
         z = feature["properties"]["zip"]
         covered_flag = coverage_lookup.get(z, False)
         center_zip_flag = center_zip_lookup.get(z, False)
-        fill_color = [255, 215, 0, 255] if center_zip_flag else ([22, 163, 74, 90] if covered_flag else [220, 38, 38, 90])
+        fill_color = [255, 215, 0, 255] if center_zip_flag else ([22, 163, 74, 130] if covered_flag else [220, 38, 38, 130])
         line_color = [0, 0, 0, 255] if center_zip_flag else [15, 15, 15, 210]
         _feature = {
             "type": "Feature",
@@ -786,7 +789,7 @@ if polygon_features:
                 filled=True,
                 get_fill_color="properties.fill_color",
                 get_line_color="properties.line_color",
-                line_width_min_pixels=1,
+                line_width_min_pixels=2,
                 extruded=transparent_3d_fill,
                 wireframe=transparent_3d_fill,
                 get_elevation=100,
@@ -815,6 +818,39 @@ if polygon_features:
             )
         )
 
+# Fallback rendering for covered ZIPs that don't have polygon boundaries in the shapefile cache.
+if missing_polygon_zips and not zip_geo_with_coverage.empty:
+    missing_zip_set = set(missing_polygon_zips)
+    missing_points = zip_geo_with_coverage[
+        zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5).isin(missing_zip_set)
+    ].copy()
+    if not missing_points.empty:
+        if "longitude" in missing_points.columns and "latitude" in missing_points.columns:
+            missing_points = missing_points.rename(columns={"longitude": "lon", "latitude": "lat"})
+        missing_points["hover_title"] = "ZIP " + missing_points["Zip Code"].astype(str).str.zfill(5)
+        missing_points["hover_type"] = "Covered ZIP (point-only)"
+        missing_points["hover_detail"] = "No boundary polygon available; shown as centroid point."
+        missing_points["fill_color"] = [[245, 158, 11, 220]] * len(missing_points)
+        missing_points["line_color"] = [[120, 53, 15, 255]] * len(missing_points)
+
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=missing_points,
+                get_position="[lon, lat]",
+                get_radius=6000,
+                get_fill_color="fill_color",
+                get_line_color="line_color",
+                stroked=True,
+                filled=True,
+                line_width_min_pixels=1,
+                radius_min_pixels=2,
+                pickable=True,
+                auto_highlight=True,
+                highlight_color=[245, 158, 11, 255],
+            )
+        )
+
 # ZIP code label layers.
 zip_labels_rendered = 0
 zip_label_style = compute_zip_label_style(map_zoom, size_scale=zip_label_size)
@@ -836,7 +872,7 @@ if not zip_geo_with_coverage.empty:
                 size_units="'meters'",
                 size_min_pixels=max(8, zip_label_style["min_pixels"] + 2),
                 size_max_pixels=max(14, zip_label_style["max_pixels"] + 2),
-                min_zoom=4.0,
+                min_zoom=3.2,
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
@@ -854,7 +890,7 @@ if not zip_geo_with_coverage.empty:
                 size_units="'meters'",
                 size_min_pixels=max(6, zip_label_style["min_pixels"] + 1),
                 size_max_pixels=max(12, zip_label_style["max_pixels"] + 1),
-                min_zoom=4.0,
+                min_zoom=3.2,
                 get_angle=0,
                 get_text_anchor="'middle'",
                 get_alignment_baseline="'center'",
@@ -869,7 +905,7 @@ if show_zip_numbers and not zip_geo_with_coverage.empty:
         if "longitude" in label_points.columns and "latitude" in label_points.columns:
             label_points = label_points.rename(columns={"longitude": "lon", "latitude": "lat"})
         label_points["label"] = label_points["Zip Code"].astype(str).str.zfill(5)
-        label_points["text_color"] = [35, 35, 35, 220]
+        label_points["text_color"] = [[35, 35, 35, 220]] * len(label_points)
         zip_labels_rendered += len(label_points)
         layers.append(
             pdk.Layer(
@@ -904,8 +940,13 @@ status_c1, status_c2, status_c3, status_c4, status_c5 = st.columns(5)
 status_c1.metric("Chapters", len(selected_chapters))
 status_c2.metric("Covered ZIPs", f"{covered_total:,}")
 status_c3.metric("Coverage", _cov_pct)
-status_c4.metric("Boundaries shown", len(zip_polygons))
+status_c4.metric("Boundaries shown", f"{len(zip_polygons):,}")
 status_c5.metric("ZIP labels", f"{zip_labels_rendered:,}")
+
+if missing_polygon_zips:
+    st.caption(
+        f"{len(missing_polygon_zips):,} covered ZIPs have no boundary polygon and are shown as orange centroid points."
+    )
 
 tooltip_html = "<b>{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
 
