@@ -411,7 +411,7 @@ def load_cached_polygons_for_zips(zip_codes: tuple[str, ...], point_stride: int 
 
     if point_stride not in POLYGON_CACHE_BY_STRIDE:
         cached_map: dict[str, dict] = {}
-        if cache_path.exists():
+        if PERSIST_POLYGON_CACHE_TO_DISK and cache_path.exists():
             try:
                 payload = json.loads(cache_path.read_text(encoding="utf-8"))
                 features = payload.get("features", [])
