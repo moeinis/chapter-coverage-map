@@ -273,10 +273,13 @@ def compute_coverage(circles: List[CircleInput]) -> pd.DataFrame:
     zip_geo = geocode_zip_centroids().copy()
     distance_matrix = precompute_distance_matrix()
 
-    covered = np.zeros(len(zip_geo), dtype=bool)
-    for c in circles:
-        if c.name in distance_matrix.columns:
-            covered |= distance_matrix[c.name].to_numpy(dtype=float) <= float(c.radius_miles)
+    active_circles = [c for c in circles if c.name in distance_matrix.columns]
+    if active_circles:
+        dm = distance_matrix[[c.name for c in active_circles]].to_numpy(dtype=float)
+        radii = np.array([float(c.radius_miles) for c in active_circles], dtype=float)
+        covered = (dm <= radii[None, :]).any(axis=1)
+    else:
+        covered = np.zeros(len(zip_geo), dtype=bool)
 
     zip_geo["covered"] = covered
     return zip_geo
@@ -312,12 +315,13 @@ def polygons(req: PolygonRequest) -> dict:
 
     zip_geo = compute_coverage(selected)
     zips = zip_geo["Zip Code"].astype(str).str.zfill(5)
-    coverage_lookup = dict(zip(zips, zip_geo["covered"].astype(bool)))
+    covered_mask = zip_geo["covered"].to_numpy(dtype=bool)
 
     target_uncovered = uncovered_limit if req.include_uncovered else 0
-    covered_zip_batch = tuple(zips[zip_geo["covered"]].tolist()[:covered_limit])
-    uncovered_zip_batch = tuple(zips[~zip_geo["covered"]].tolist()[:target_uncovered])
+    covered_zip_batch = tuple(zips[covered_mask].tolist()[:covered_limit])
+    uncovered_zip_batch = tuple(zips[~covered_mask].tolist()[:target_uncovered])
     request_zip_batch = covered_zip_batch + uncovered_zip_batch
+    covered_zip_set = set(covered_zip_batch)
 
     polygon_map = load_cached_polygons_for_zips(request_zip_batch, point_stride=stride) if request_zip_batch else {}
     features = []
@@ -330,7 +334,7 @@ def polygons(req: PolygonRequest) -> dict:
                 "type": "Feature",
                 "properties": {
                     **f.get("properties", {}),
-                    "covered": bool(coverage_lookup.get(str(z).zfill(5), False)),
+                    "covered": z in covered_zip_set,
                 },
                 "geometry": f.get("geometry", {}),
             }
