@@ -515,6 +515,11 @@ with st.sidebar:
         value=False,
         help="Hidden by default to keep the UI clean.",
     )
+    near_realtime_mode = st.checkbox(
+        "Near real-time mode",
+        value=True,
+        help="While adjusting radii, show a fast preview and render full ZIP boundaries only after Apply.",
+    )
     if show_chapter_radius_controls:
         st.caption("Adjust sliders, then click **Apply radius changes** for a single fast refresh.")
         with st.form("radius_controls_form", clear_on_submit=False):
@@ -534,6 +539,7 @@ with st.sidebar:
         if apply_radius_changes:
             for chapter, radius in radius_updates.items():
                 st.session_state[f"radius_{chapter}"] = int(radius)
+            st.session_state["_radius_just_applied"] = True
             st.rerun()
 
     with st.expander("Advanced settings", expanded=False):
@@ -697,30 +703,30 @@ if not chapter_df.empty:
             pickable=chapter_pickable,
         )
     )
-    # Chapter name labels — visible when zoomed into a chapter area
-    layers.append(
-        pdk.Layer(
-            "TextLayer",
-            data=chapter_df,
-            get_position="[lon, lat]",
-            get_text="name",
-            get_color=[15, 23, 70, 230],
-            get_size=25000,
-            size_units="'meters'",
-            size_min_pixels=10,
-            size_max_pixels=20,
-            min_zoom=4,
-            get_angle=0,
-            get_text_anchor="'middle'",
-            get_alignment_baseline="'center'",
-            pickable=False,
+    # Chapter name labels — skip in Safe Mode for faster draw.
+    if not safe_mode:
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=chapter_df,
+                get_position="[lon, lat]",
+                get_text="name",
+                get_color=[15, 23, 70, 230],
+                get_size=25000,
+                size_units="'meters'",
+                size_min_pixels=10,
+                size_max_pixels=20,
+                min_zoom=4,
+                get_angle=0,
+                get_text_anchor="'middle'",
+                get_alignment_baseline="'center'",
+                pickable=False,
+            )
         )
-    )
 
 # Render US Census ZIP polygons with coverage highlighting
-coverage_lookup: dict[str, bool] = {}
-center_zip_lookup: dict[str, bool] = {}
-center_chapter_lookup: dict[str, str] = {}
+center_chapter_lookup: dict[str, str] = selected_center_zip_map.copy() if selected_center_zip_map else {}
+center_zip_set: set[str] = set(selected_center_zip_keys)
 zip_polygons: list[dict] = []
 covered_zips: tuple[str, ...] = ()
 covered_zips_all: tuple[str, ...] = ()
@@ -734,25 +740,24 @@ if not zip_geo_with_coverage.empty:
     hard_cap = ALL_US_RENDER_CAP if zip_dataset_scope == "All US ZIP centroids" else ABSOLUTE_RENDER_CAP
     effective_render_cap = max(1, min(requested_render_cap, hard_cap))
     covered_zips = covered_zips_all[:effective_render_cap]
+
+    # Near real-time preview: while editing radii, defer heavy covered-boundary rendering
+    # until Apply is clicked. Center ZIPs still render.
+    just_applied = bool(st.session_state.get("_radius_just_applied", False))
+    defer_covered_boundaries = bool(near_realtime_mode and show_chapter_radius_controls and not just_applied)
+    if defer_covered_boundaries:
+        covered_zips = tuple()
+
     rendered_covered_zip_set = set(covered_zips)
     skipped_covered_zip_count = max(0, len(covered_zips_all) - len(covered_zips))
     center_zips = tuple(selected_center_zip_keys)
     render_zips = tuple(dict.fromkeys([*covered_zips, *center_zips]))
     st.session_state["inside_zips_all"] = covered_zips_all
 
-    if render_zips:
-        # Cache lookup dicts in session state — rebuilt only when covered set changes.
-        _lookup_key = (coverage_signature, selected_center_zip_keys)
-        if st.session_state.get("_lookup_cache_key") != _lookup_key:
-            _zips_v = zip_geo_with_coverage["Zip Code"].astype(str).str.zfill(5)
-            st.session_state["_coverage_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["covered"].astype(bool)))
-            st.session_state["_center_zip_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["is_center_zip"].astype(bool)))
-            st.session_state["_center_chapter_lookup"] = dict(zip(_zips_v, zip_geo_with_coverage["center_chapter"].astype(str)))
-            st.session_state["_lookup_cache_key"] = _lookup_key
-        coverage_lookup = st.session_state["_coverage_lookup"]
-        center_zip_lookup = st.session_state["_center_zip_lookup"]
-        center_chapter_lookup = st.session_state["_center_chapter_lookup"]
+    if just_applied:
+        st.session_state["_radius_just_applied"] = False
 
+    if render_zips:
         map_key = f"_zip_polygon_map_stride_{polygon_stride}"
         polygon_map_for_stride: dict[str, dict] = st.session_state.get(map_key, {})
         missing_render_zips = tuple(z for z in render_zips if z not in polygon_map_for_stride)
@@ -780,9 +785,8 @@ if zip_polygons and st.session_state.get("_pfeat_cache_key") != _pfeat_key:
     _non_center_polygon_features: list[dict] = []
     for feature in zip_polygons:
         z = feature["properties"]["zip"]
-        covered_flag = coverage_lookup.get(z, False)
-        center_zip_flag = center_zip_lookup.get(z, False)
-        fill_color = [255, 215, 0, 255] if center_zip_flag else ([22, 163, 74, 130] if covered_flag else [220, 38, 38, 130])
+        center_zip_flag = z in center_zip_set
+        fill_color = [255, 215, 0, 255] if center_zip_flag else [22, 163, 74, 130]
         line_color = [0, 0, 0, 255] if center_zip_flag else [15, 15, 15, 210]
         _feature = {
             "type": "Feature",
@@ -956,6 +960,9 @@ if skipped_covered_zip_count > 0:
     st.caption(
         f"Rendering fast mode: {skipped_covered_zip_count:,} covered ZIP boundaries not drawn to keep the UI responsive and below Streamlit payload limits."
     )
+
+if near_realtime_mode and show_chapter_radius_controls and not st.session_state.get("_radius_just_applied", False):
+    st.caption("Near real-time preview active: full covered ZIP boundaries render after you click Apply.")
 
 tooltip_html = "<b>{properties.hover_title}</b><br/><b>Type:</b> {properties.hover_type}<br/>{properties.hover_detail}"
 
