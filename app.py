@@ -476,13 +476,19 @@ def compute_zip_label_style(current_zoom: float, size_scale: float = 1.0) -> dic
 with st.sidebar:
     st.subheader("⚙️ Controls")
     safe_mode = True
+    # Production-fast settings (locked)
+    minimal_basemap = True
+    zip_dataset_scope = "Project ZIP table"
+    transparent_3d_fill = False
+    polygon_stride = 6
+    render_all_covered_boundaries = False
+    max_rendered_covered_zips = 700
+
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
         default=list(CHAPTERS.keys()),
     )
-
-    defaults = {"stride": 6, "max_rendered_covered_zips": 900}
 
     map_zoom = st.slider(
         "Initial map zoom",
@@ -534,41 +540,12 @@ with st.sidebar:
             st.session_state["_radius_just_applied"] = True
             st.rerun()
 
-    with st.expander("Advanced settings", expanded=False):
-        minimal_basemap = st.checkbox(
-            "Minimal base map",
-            value=True,
-            help="Faster initial load by skipping external map tiles.",
-        )
-        zip_dataset_scope = "Project ZIP table"
-        transparent_3d_fill = st.checkbox(
-            "3D transparent ZIP fill",
-            value=False,
-            help="Adds subtle depth while keeping ZIP polygons transparent and easy to read.",
-        )
-        default_polygon_stride_index = [1, 2, 3, 4, 5, 6].index(defaults["stride"])
-        polygon_stride = st.selectbox(
-            "ZIP boundary detail",
-            options=[1, 2, 3, 4, 5, 6],
-            index=default_polygon_stride_index,
-        )
-        render_all_covered_boundaries = False
-        max_rendered_covered_zips = st.slider(
-            "Max covered ZIP boundaries to render",
-            min_value=200,
-            max_value=1500,
-            value=defaults["max_rendered_covered_zips"],
-            step=100,
-            disabled=True,
-            help="Limits map draw load for speed. Does not change coverage calculations.",
-        )
-
     if safe_mode:
         minimal_basemap = True
         zip_dataset_scope = "Project ZIP table"
         polygon_stride = 6
         render_all_covered_boundaries = False
-        max_rendered_covered_zips = min(int(max_rendered_covered_zips), 700)
+        max_rendered_covered_zips = 700
         show_zip_numbers = False
         st.caption("Fast mode locked: project ZIP scope, high stride, capped boundaries, labels off.")
 
