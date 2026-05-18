@@ -475,11 +475,7 @@ def compute_zip_label_style(current_zoom: float, size_scale: float = 1.0) -> dic
 
 with st.sidebar:
     st.subheader("⚙️ Controls")
-    safe_mode = st.checkbox(
-        "Safe mode (fastest)",
-        value=True,
-        help="Applies fast defaults to keep rendering responsive.",
-    )
+    safe_mode = True
     selected_chapters = st.multiselect(
         "Chapters to show",
         list(CHAPTERS.keys()),
@@ -515,11 +511,7 @@ with st.sidebar:
         value=False,
         help="Hidden by default to keep the UI clean.",
     )
-    near_realtime_mode = st.checkbox(
-        "Near real-time mode",
-        value=True,
-        help="While adjusting radii, show a fast preview and render full ZIP boundaries only after Apply.",
-    )
+    near_realtime_mode = True
     if show_chapter_radius_controls:
         st.caption("Adjust sliders, then click **Apply radius changes** for a single fast refresh.")
         with st.form("radius_controls_form", clear_on_submit=False):
@@ -548,12 +540,7 @@ with st.sidebar:
             value=True,
             help="Faster initial load by skipping external map tiles.",
         )
-        zip_dataset_scope = st.selectbox(
-            "ZIP dataset scope",
-            options=["Project ZIP table", "All US ZIP centroids"],
-            index=0,
-            help="Project ZIP table is faster; switch to full US ZIP centroids only when you need nationwide coverage.",
-        )
+        zip_dataset_scope = "Project ZIP table"
         transparent_3d_fill = st.checkbox(
             "3D transparent ZIP fill",
             value=False,
@@ -565,18 +552,14 @@ with st.sidebar:
             options=[1, 2, 3, 4, 5, 6],
             index=default_polygon_stride_index,
         )
-        render_all_covered_boundaries = st.checkbox(
-            "Render all covered ZIP boundaries (slow)",
-            value=False,
-            help="Off = much faster UI. Full coverage stats remain accurate either way.",
-        )
+        render_all_covered_boundaries = False
         max_rendered_covered_zips = st.slider(
             "Max covered ZIP boundaries to render",
             min_value=200,
-            max_value=5000,
+            max_value=1500,
             value=defaults["max_rendered_covered_zips"],
             step=100,
-            disabled=render_all_covered_boundaries,
+            disabled=True,
             help="Limits map draw load for speed. Does not change coverage calculations.",
         )
 
@@ -587,7 +570,7 @@ with st.sidebar:
         render_all_covered_boundaries = False
         max_rendered_covered_zips = min(int(max_rendered_covered_zips), 700)
         show_zip_numbers = False
-        st.caption("Safe mode active: project ZIP scope, high stride, capped boundaries, labels off.")
+        st.caption("Fast mode locked: project ZIP scope, high stride, capped boundaries, labels off.")
 
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
