@@ -478,7 +478,7 @@ with st.sidebar:
     safe_mode = False
     # Full-display settings (locked)
     minimal_basemap = True
-    zip_dataset_scope = "Project ZIP table"
+    zip_dataset_scope = "All US ZIP centroids"
     transparent_3d_fill = False
     polygon_stride = 6
     render_all_covered_boundaries = True
@@ -499,7 +499,7 @@ with st.sidebar:
     )
     show_zip_numbers = st.checkbox(
         "Show ZIP code labels",
-        value=True,
+        value=False,
         help="Turn ZIP number labels on or off.",
     )
     zip_label_size = st.slider(
@@ -542,12 +542,12 @@ with st.sidebar:
 
     if safe_mode:
         minimal_basemap = True
-        zip_dataset_scope = "Project ZIP table"
+        zip_dataset_scope = "All US ZIP centroids"
         polygon_stride = 6
         render_all_covered_boundaries = True
         max_rendered_covered_zips = 1000000
 
-    st.caption("Full display mode locked: all covered ZIP boundaries inside circles are always rendered.")
+    st.caption("Full display mode locked: all covered ZIPs inside circles are always shown.")
 
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
