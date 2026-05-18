@@ -475,14 +475,14 @@ def compute_zip_label_style(current_zoom: float, size_scale: float = 1.0) -> dic
 
 with st.sidebar:
     st.subheader("⚙️ Controls")
-    safe_mode = True
-    # Production-fast settings (locked)
+    safe_mode = False
+    # Full-display settings (locked)
     minimal_basemap = True
     zip_dataset_scope = "Project ZIP table"
     transparent_3d_fill = False
     polygon_stride = 6
-    render_all_covered_boundaries = False
-    max_rendered_covered_zips = 700
+    render_all_covered_boundaries = True
+    max_rendered_covered_zips = 1000000
 
     selected_chapters = st.multiselect(
         "Chapters to show",
@@ -517,7 +517,7 @@ with st.sidebar:
         value=False,
         help="Hidden by default to keep the UI clean.",
     )
-    near_realtime_mode = True
+    near_realtime_mode = False
     if show_chapter_radius_controls:
         st.caption("Adjust sliders, then click **Apply radius changes** for a single fast refresh.")
         with st.form("radius_controls_form", clear_on_submit=False):
@@ -544,10 +544,10 @@ with st.sidebar:
         minimal_basemap = True
         zip_dataset_scope = "Project ZIP table"
         polygon_stride = 6
-        render_all_covered_boundaries = False
-        max_rendered_covered_zips = 700
-        show_zip_numbers = False
-        st.caption("Fast mode locked: project ZIP scope, high stride, capped boundaries, labels off.")
+        render_all_covered_boundaries = True
+        max_rendered_covered_zips = 1000000
+
+    st.caption("Full display mode locked: all covered ZIP boundaries inside circles are always rendered.")
 
     st.caption("Legend: Yellow = chapter centroid ZIP • Green = covered ZIP • Red = uncovered ZIP")
     st.caption(datetime.now().strftime("Updated %Y-%m-%d %H:%M:%S"))
@@ -696,26 +696,13 @@ if not zip_geo_with_coverage.empty:
     covered_zips_all = tuple(
         zip_geo_with_coverage.loc[zip_geo_with_coverage["covered"], "Zip Code"].astype(str).str.zfill(5).tolist()
     )
-    requested_render_cap = len(covered_zips_all) if render_all_covered_boundaries else int(max_rendered_covered_zips)
-    hard_cap = ALL_US_RENDER_CAP if zip_dataset_scope == "All US ZIP centroids" else ABSOLUTE_RENDER_CAP
-    effective_render_cap = max(1, min(requested_render_cap, hard_cap))
-    covered_zips = covered_zips_all[:effective_render_cap]
-
-    # Near real-time preview: while editing radii, defer heavy covered-boundary rendering
-    # until Apply is clicked. Center ZIPs still render.
-    just_applied = bool(st.session_state.get("_radius_just_applied", False))
-    defer_covered_boundaries = bool(near_realtime_mode and show_chapter_radius_controls and not just_applied)
-    if defer_covered_boundaries:
-        covered_zips = tuple()
+    covered_zips = covered_zips_all
 
     rendered_covered_zip_set = set(covered_zips)
-    skipped_covered_zip_count = max(0, len(covered_zips_all) - len(covered_zips))
+    skipped_covered_zip_count = 0
     center_zips = tuple(selected_center_zip_keys)
     render_zips = tuple(dict.fromkeys([*covered_zips, *center_zips]))
     st.session_state["inside_zips_all"] = covered_zips_all
-
-    if just_applied:
-        st.session_state["_radius_just_applied"] = False
 
     if render_zips:
         map_key = f"_zip_polygon_map_stride_{polygon_stride}"
