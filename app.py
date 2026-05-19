@@ -451,7 +451,7 @@ def circles_from_sidebar(selected_chapters: list[str]) -> list[dict]:
     circles = []
     for chapter in selected_chapters:
         base = CHAPTERS[chapter]
-        radius = st.session_state.get(f"radius_{chapter}", base["radius_miles"])
+        radius = st.session_state.get(f"radius_{chapter}", 10)
         circles.append(
             {
                 "name": chapter,
@@ -523,7 +523,7 @@ with st.sidebar:
         with st.form("radius_controls_form", clear_on_submit=False):
             radius_updates: dict[str, int] = {}
             for chapter in selected_chapters:
-                default_radius = int(st.session_state.get(f"radius_{chapter}", CHAPTERS[chapter]["radius_miles"]))
+                default_radius = int(st.session_state.get(f"radius_{chapter}", 10))
                 radius_updates[chapter] = st.slider(
                     f"{chapter} radius (mi)",
                     min_value=10,
