@@ -18,6 +18,9 @@ data/
 logs/
 *.log
 
+# Runtime PID files
+.runtime/
+
 # OS files
 .DS_Store
 Thumbs.db
